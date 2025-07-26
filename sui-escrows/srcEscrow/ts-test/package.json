@@ -1,0 +1,31 @@
+{
+  "name": "sui-sponsored-escrow-demo",
+  "version": "1.0.0",
+  "description": "Demonstrates true sponsored transactions with HTLC escrow on Sui",
+  "main": "sponsored_escrow_demo.ts",
+  "scripts": {
+    "test": "tsx gasless_sponsored_escrow_demo.ts",
+    "testdoublespending": "tsx test_double_withdrawal.ts",
+    "recover": "tsx recover_escrows.ts",
+    "build": "tsc sponsored_escrow_demo.ts"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.36.2",
+    "@types/node": "^24.1.0",
+    "dotenv": "^16.6.1",
+    "viem": "^2.21.44"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "sui",
+    "blockchain",
+    "htlc",
+    "sponsored-transactions",
+    "escrow"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
