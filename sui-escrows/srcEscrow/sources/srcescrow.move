@@ -556,28 +556,3 @@ public fun get_all_takers(escrow: &Escrow): vector<address> {
     escrow.taker_addresses
 }
 
-// ===== HELPER FUNCTIONS FOR COMMON N-PART CONFIGURATIONS =====
-
-/// Common configuration: 4 equal parts (25% each) with 5 secrets
-/// Creates 4 parts of 25% each, requiring 5 total secrets (4 + 1)
-public fun get_4_parts_config(): u64 {
-    4
-}
-
-/// Common configuration: 3 equal parts (~33.33% each) with 4 secrets  
-/// Creates 3 parts of ~33.33% each, requiring 4 total secrets (3 + 1)
-public fun get_3_parts_config(): u64 {
-    3
-}
-
-/// Common configuration: 2 equal parts (50% each) with 3 secrets
-/// Creates 2 parts of 50% each, requiring 3 total secrets (2 + 1)
-public fun get_2_parts_config(): u64 {
-    2
-}
-
-/// Common configuration: 10 equal parts (10% each) with 11 secrets
-/// Creates 10 parts of 10% each, requiring 11 total secrets (10 + 1)
-public fun get_10_parts_config(): u64 {
-    10
-}
