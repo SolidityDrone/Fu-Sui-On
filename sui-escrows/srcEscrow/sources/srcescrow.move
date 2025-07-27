@@ -37,6 +37,7 @@ public struct Escrow has key, store {
     created_at: u64,
     total_amount: u64,
     filled_amount: u64,
+    deadline: u64,                // Deadline for transaction execution (prevent replay attacks)
     is_resolved: bool,
 }
 
@@ -73,6 +74,7 @@ const EINVALID_FILL_AMOUNT: u64 = 8;
 const EWINDOW_EXPIRED: u64 = 10;
 const EWINDOW_NOT_ACTIVE: u64 = 11;
 const EINVALID_PERMIT: u64 = 13;
+const EDEADLINE_EXPIRED: u64 = 14;
 const EINVALID_NUM_PARTS: u64 = 15;
 const EINVALID_SECRET_INDEX: u64 = 16;
 
@@ -149,6 +151,7 @@ public fun create_sponsored_escrow(
     dst_public_withdrawal_end: u64,
     dst_cancellation_end: u64,
     num_parts: u64,              // N equal parts (creates N+1 secrets total)
+    deadline: u64,               // Deadline for transaction execution (prevent replay attacks)
     clock: &Clock,
     ctx: &mut tx_context::TxContext
 ): Escrow {
@@ -174,6 +177,9 @@ public fun create_sponsored_escrow(
     assert!(dst_public_withdrawal_end > dst_withdrawal_end, EINVALID_PERMIT);
     assert!(dst_cancellation_end > dst_public_withdrawal_end, EINVALID_PERMIT);
     
+    // Validate deadline: must be in the future and transaction must be executed before deadline
+    assert!(deadline > current_time, EDEADLINE_EXPIRED);
+    
     // Increment escrow count
     factory.escrow_count = factory.escrow_count + 1;
     
@@ -193,6 +199,7 @@ public fun create_sponsored_escrow(
         created_at: current_time,
         total_amount: amount,
         filled_amount: 0,
+        deadline,
         is_resolved: false,
     };
     
@@ -210,6 +217,7 @@ public fun create_and_transfer_escrow(
     dst_public_withdrawal_end: u64,
     dst_cancellation_end: u64,
     num_parts: u64,
+    deadline: u64,               // Deadline for transaction execution (prevent replay attacks)
     clock: &Clock,
     ctx: &mut tx_context::TxContext
 ) {
@@ -223,6 +231,7 @@ public fun create_and_transfer_escrow(
         dst_public_withdrawal_end,
         dst_cancellation_end,
         num_parts,
+        deadline,
         clock,
         ctx
     );
@@ -396,6 +405,7 @@ public fun withdraw_full(
         created_at: _, 
         total_amount: _, 
         filled_amount: _,
+        deadline: _,
         is_resolved: _
     } = escrow;
     
@@ -463,6 +473,7 @@ public fun anyone_refund_to_maker(
         created_at: _, 
         total_amount: _, 
         filled_amount: _,
+        deadline: _,
         is_resolved: _
     } = escrow;
     
@@ -486,7 +497,7 @@ public fun anyone_refund_to_maker(
 // ===== VIEW FUNCTIONS =====
 
 /// Get escrow information
-public fun get_escrow_info(escrow: &Escrow): (u64, vector<u8>, vector<u8>, address, vector<address>, u64, u64, u64, u64, u64, u64, u64, bool) {
+public fun get_escrow_info(escrow: &Escrow): (u64, vector<u8>, vector<u8>, address, vector<address>, u64, u64, u64, u64, u64, u64, u64, u64, bool) {
     (
         balance::value(&escrow.balance),
         escrow.hash_lock,
@@ -500,6 +511,7 @@ public fun get_escrow_info(escrow: &Escrow): (u64, vector<u8>, vector<u8>, addre
         escrow.part_size,
         escrow.total_amount,
         escrow.filled_amount,
+        escrow.deadline,
         escrow.is_resolved
     )
 }
@@ -549,6 +561,11 @@ public fun get_fill_percentage(escrow: &Escrow): u64 {
 public fun get_taker_for_secret(escrow: &Escrow, secret_index: u64): address {
     assert!(secret_index > 0 && secret_index <= escrow.num_parts + 1, EINVALID_SECRET_INDEX);
     *vector::borrow(&escrow.taker_addresses, secret_index - 1)
+}
+
+/// Get the deadline for transaction execution
+public fun get_deadline(escrow: &Escrow): u64 {
+    escrow.deadline
 }
 
 /// Get all taker addresses

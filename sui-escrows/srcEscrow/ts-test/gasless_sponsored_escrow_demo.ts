@@ -9,7 +9,7 @@ dotenv.config();
 
 // Your deployed contract IDs - UPDATED with N+1 secrets system!
 
-const PACKAGE_ID = (process as any).env.PACKAGE_ID; // Load from .env file
+const PACKAGE_ID = "0x543a1913d59ef4a4c1119881798540a2af3533e95b580061955b30e43e30fc70"; // Updated package ID
 
 // Connect to testnet
 const client = new SuiClient({ url: getFullnodeUrl('testnet') });
@@ -65,6 +65,7 @@ async function createSingleEscrow(
     bobKeypair: Ed25519Keypair, // Add Bob's keypair for gas sponsorship
     takerAddresses: string[],
     factoryId: string,
+    factoryVersion: number,
     escrowNumber: number,
     secretData: any
 ): Promise<string | null> {
@@ -95,15 +96,21 @@ async function createSingleEscrow(
     const dstPublicWithdrawalEnd = currentTime + 900000;  // +15 minutes
     const dstCancellationEnd = currentTime + 1200000;     // +20 minutes
 
+    // Calculate deadline for transaction execution (prevent replay attacks)
+    // Alice's signed transaction must be executed within this deadline
+    const deadline = currentTime + 600000; // +10 minutes (increased to avoid timing issues)
+
     // Use the hash of Secret 2 for 50% withdrawal
     const hashLock = uint8ArrayToNumberArray(secretData.leafHashes[1]); // Hash of Secret 2
     const merkleRoot = uint8ArrayToNumberArray(secretData.merkleRoot);
 
     const numParts = 4;
-    const escrowAmount = 100000000; // 0.01 SUI (10M MIST)
+    const escrowAmount = 1000000; // 0.01 SUI (10M MIST) - reduced to fit Alice's balance
 
     console.log(`Escrow amount: ${escrowAmount} MIST (${escrowAmount / 1000000000} SUI)`);
     console.log(`Using hash of Secret 2 for 50% withdrawal: ${toHex(secretData.leafHashes[1])}`);
+    console.log(`Transaction deadline: ${new Date(deadline).toISOString()} (${deadline - currentTime}ms from now)`);
+    console.log(`🔍 Deadline debug: currentTime=${currentTime}, deadline=${deadline}, diff=${deadline - currentTime}`);
     const [splitCoin] = gaslessTx.splitCoins(gaslessTx.object(aliceCoin.coinObjectId), [escrowAmount]);
 
     // Use the passed taker addresses for N+1 secrets (5 takers for 4 parts)
@@ -120,7 +127,7 @@ async function createSingleEscrow(
         arguments: [
             gaslessTx.sharedObjectRef({              // EXPLICIT mutable shared object
                 objectId: factoryId,
-                initialSharedVersion: 513593648,  // Version from factory creation
+                initialSharedVersion: factoryVersion,  // Dynamic version from factory object
                 mutable: true
             }),
             splitCoin,                                // Alice's coins  
@@ -131,6 +138,7 @@ async function createSingleEscrow(
             gaslessTx.pure.u64(dstPublicWithdrawalEnd), // dst_public_withdrawal_end  
             gaslessTx.pure.u64(dstCancellationEnd),   // dst_cancellation_end
             gaslessTx.pure.u64(numParts),             // num_parts (N=4 → 5 secrets)
+            gaslessTx.pure.u64(deadline),             // deadline for transaction execution
             gaslessTx.object('0x6'),                  // clock
         ],
     });
@@ -166,6 +174,13 @@ async function createSingleEscrow(
 
     const finalTxBytes = await sponsoredTx.build({ client });
 
+    // Debug the transaction before execution
+    console.log(`🔍 Transaction details before execution:`);
+    console.log(`   Sender: ${sponsoredTx.blockData.sender}`);
+    console.log(`   Gas Owner: ${sponsoredTx.blockData.gasConfig?.owner}`);
+    console.log(`   Gas Budget: ${sponsoredTx.blockData.gasConfig?.budget}`);
+    console.log(`   Gas Payment: ${JSON.stringify(sponsoredTx.blockData.gasConfig?.payment, null, 2)}`);
+
     // Both Alice and Bob need to sign
     const aliceSignature = await aliceKeypair.signTransaction(finalTxBytes);
     const bobSignature = await bobKeypair.signTransaction(finalTxBytes);
@@ -174,19 +189,31 @@ async function createSingleEscrow(
     console.log(`✅ Bob signed as gas sponsor`);
 
     // Execute with both signatures
-    const result = await client.executeTransactionBlock({
-        transactionBlock: finalTxBytes,
-        signature: [aliceSignature.signature, bobSignature.signature], // Array of both signatures
-        options: {
-            showEffects: true,
-            showEvents: true,
-            showObjectChanges: true,
-            showBalanceChanges: true,
-        },
-    });
+    let result;
+    try {
+        result = await client.executeTransactionBlock({
+            transactionBlock: finalTxBytes,
+            signature: [aliceSignature.signature, bobSignature.signature], // Array of both signatures
+            options: {
+                showEffects: true,
+                showEvents: true,
+                showObjectChanges: true,
+                showBalanceChanges: true,
+            },
+        });
+    } catch (error) {
+        console.log(`❌ Transaction execution failed with error:`);
+        console.log(`   Error: ${error}`);
+        console.log(`   Error message: ${error.message}`);
+        console.log(`   Error details: ${JSON.stringify(error, null, 2)}`);
+        return null;
+    }
 
     console.log(`✅ Transaction executed: ${result.digest}`);
     console.log(`✅ Status: ${result.effects?.status?.status}`);
+
+    // Debug transaction result
+    console.log(`🔍 Full transaction result:`, JSON.stringify(result, null, 2));
 
     console.log(`✅ Transaction executed: ${result.digest}`);
     console.log(`✅ Status: ${result.effects?.status?.status}`);
@@ -212,12 +239,16 @@ async function createSingleEscrow(
             change.objectType?.includes('::srcescrow::Escrow')
     );
 
+    console.log(`🔍 Created objects:`, JSON.stringify(createdObjects, null, 2));
+    console.log(`🔍 All object changes:`, JSON.stringify(result.objectChanges, null, 2));
+
     if (createdObjects && createdObjects.length > 0 && createdObjects[0].type === 'created') {
         const escrowId = createdObjects[0].objectId;
         console.log(`✅ Escrow created: ${escrowId}`);
         return escrowId;
     } else {
         console.log("❌ No escrow object found in transaction result");
+        console.log("❌ This means the escrow creation failed!");
         return null;
     }
 }
@@ -227,6 +258,7 @@ async function createSingleEscrow(
 async function performMultiTakerWithdrawals(
     escrowId: string,
     factoryId: string,
+    factoryVersion: number,
     secretData: any,
     bobKeypair: Ed25519Keypair,
     carKeypair: Ed25519Keypair,   // Car withdraws for herself
@@ -240,18 +272,19 @@ async function performMultiTakerWithdrawals(
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Step 1: Bob withdraws his 50% using secret 2
-    await bobWithdrawsHalf(escrowId, factoryId, secretData, bobKeypair);
+    await bobWithdrawsHalf(escrowId, factoryId, factoryVersion, secretData, bobKeypair);
 
     // Step 2: Car withdraws her 25% using secret 3 (she has her own gas)
-    await carWithdrawsQuarter(escrowId, factoryId, secretData, carKeypair);
+    await carWithdrawsQuarter(escrowId, factoryId, factoryVersion, secretData, carKeypair);
 
     // Step 3: Eve withdraws her 50% using secret 4 (she has her own gas)
-    await eveWithdrawsFinal(escrowId, factoryId, secretData, eveKeypair);
+    await eveWithdrawsFinal(escrowId, factoryId, factoryVersion, secretData, eveKeypair);
 }
 
 async function bobWithdrawsHalf(
     escrowId: string,
     factoryId: string,
+    factoryVersion: number,
     secretData: any,
     bobKeypair: Ed25519Keypair
 ): Promise<void> {
@@ -259,6 +292,11 @@ async function bobWithdrawsHalf(
 
     console.log(`\n🤝 STEP 1: BOB WITHDRAWS 50%`);
     console.log("─".repeat(35));
+
+    // Debug secretData structure
+    console.log(`🔍 Debug secretData:`, JSON.stringify(secretData, null, 2));
+    console.log(`🔍 secretData.secrets:`, secretData.secrets);
+    console.log(`🔍 secretData.secrets[1]:`, secretData.secrets?.[1]);
 
     // Get escrow data to calculate proper amounts
     const escrowData = await client.getObject({
@@ -294,7 +332,7 @@ async function bobWithdrawsHalf(
             withdrawTx.object(escrowId),
             withdrawTx.sharedObjectRef({              // EXPLICIT mutable shared object
                 objectId: factoryId,
-                initialSharedVersion: 513593648,  // Version from factory creation
+                initialSharedVersion: factoryVersion,  // Dynamic version from factory object
                 mutable: true
             }),
             withdrawTx.pure.vector('u8', secret2),
@@ -353,6 +391,7 @@ async function bobWithdrawsHalf(
 async function carWithdrawsQuarter(
     escrowId: string,
     factoryId: string,
+    factoryVersion: number,
     secretData: any,
     carKeypair: Ed25519Keypair  // Car withdraws for herself
 ): Promise<void> {
@@ -397,7 +436,7 @@ async function carWithdrawsQuarter(
                 withdrawTx.object(escrowId),
                 withdrawTx.sharedObjectRef({              // EXPLICIT mutable shared object
                     objectId: factoryId,
-                    initialSharedVersion: 513593648,  // Version from factory creation
+                    initialSharedVersion: factoryVersion,  // Dynamic version from factory object
                     mutable: true
                 }),
                 withdrawTx.pure.vector('u8', secret3),
@@ -460,6 +499,7 @@ async function carWithdrawsQuarter(
 async function eveWithdrawsFinal(
     escrowId: string,
     factoryId: string,
+    factoryVersion: number,
     secretData: any,
     eveKeypair: Ed25519Keypair  // Eve withdraws for herself
 ): Promise<void> {
@@ -504,7 +544,7 @@ async function eveWithdrawsFinal(
                 withdrawTx.object(escrowId),
                 withdrawTx.sharedObjectRef({              // EXPLICIT mutable shared object
                     objectId: factoryId,
-                    initialSharedVersion: 513593648,  // Version from factory creation
+                    initialSharedVersion: factoryVersion,  // Dynamic version from factory object
                     mutable: true
                 }),
                 withdrawTx.pure.vector('u8', secret4),
@@ -622,9 +662,11 @@ async function demonstrateGaslessSponsoredEscrow() {
     console.log(`🎭 Eve: ${parseInt(initialEveBalance.totalBalance)} MIST (${parseInt(initialEveBalance.totalBalance) / 1000000000} SUI)`);
     console.log("");
 
-    // Use the new factory (just created)
-    const factoryId = "0x6116f1c97d5fea0d8668baf4fbb8620717940eefde5c9725db4655ee72681446";
-    console.log(`🏭 Using new factory: ${factoryId}`);
+    // Use the factory
+    const factoryId = "0x2948c6d0fef0b0f2c60bec03a84750e31d5a6799711044db6b0346af0ade3b03";
+    const factoryVersion = 513761148; // Version from factory creation
+    console.log(`🏭 Using factory: ${factoryId}`);
+    console.log(`🏭 Factory version: ${factoryVersion}`);
     console.log("");
 
     // CREATE SINGLE ESCROW USING THE FACTORY
@@ -647,7 +689,7 @@ async function demonstrateGaslessSponsoredEscrow() {
     ];
 
     for (let i = 1; i <= numberOfEscrows; i++) {
-        const escrowId = await createSingleEscrow(aliceKeypair, bobKeypair, multiTakerAddresses, factoryId, i, secretData);
+        const escrowId = await createSingleEscrow(aliceKeypair, bobKeypair, multiTakerAddresses, factoryId, factoryVersion, i, secretData);
         if (escrowId) {
             createdEscrows.push(escrowId);
         }
@@ -666,6 +708,7 @@ async function demonstrateGaslessSponsoredEscrow() {
         await performMultiTakerWithdrawals(
             createdEscrows[i],
             factoryId,
+            factoryVersion,
             secretData,
             bobKeypair,
             carKeypair,  // Car withdraws for herself
@@ -734,8 +777,6 @@ async function demonstrateGaslessSponsoredEscrow() {
         }
     }
     console.log("");
-
-
 }
 
 // Run the demo
