@@ -415,79 +415,60 @@ async function bobWithdrawsWithRelayerSignature(
 
     const withdrawTx = new Transaction();
 
-    // Let's try a single withdrawal first to confirm the contract works
-    const secret = uint8ArrayToNumberArray(secretData.secrets[0]); // Secret 1 (leaf 0 - first secret)
-    const proof = getMerkleProof(secretData.tree, 0); // Leaf 0 (Secret 1)
+    // Bob is withdrawing 5 parts using range withdrawal (Secret 1 to Secret 5)
+    const startSecret = uint8ArrayToNumberArray(secretData.secrets[0]); // Secret 1 (leaf 0)
+    const endSecret = uint8ArrayToNumberArray(secretData.secrets[4]); // Secret 5 (leaf 4)
+    const startProof = getMerkleProof(secretData.tree, 0); // Leaf 0 (Secret 1)
+    const endProof = getMerkleProof(secretData.tree, 4); // Leaf 4 (Secret 5)
 
-    // Bob is withdrawing 1 part using Secret 1 (first secret)
-    console.log(`   Bob's withdrawal: 1 part using Secret 1 (first secret)`);
-    console.log(`   Leaf 0, Secret=${toHex(secretData.secrets[0])}`);
-    console.log(`   Secret index: 1, Leaf index: 0`);
-    console.log(`   Proof:`, proof.map(p => toHex(new Uint8Array(p))));
+    console.log(`   Bob's withdrawal: 5 parts using range withdrawal (Secret 1 to Secret 5)`);
+    console.log(`   Start Secret 1: ${toHex(secretData.secrets[0])}`);
+    console.log(`   End Secret 5: ${toHex(secretData.secrets[4])}`);
+    console.log(`   Start Proof:`, startProof.map(p => toHex(new Uint8Array(p))));
+    console.log(`   End Proof:`, endProof.map(p => toHex(new Uint8Array(p))));
     console.log(`   Merkle Root: ${toHex(secretData.merkleRoot)}`);
 
-    // Use OpenZeppelin's verification instead of manual verification
-    console.log(`   🔍 Using OpenZeppelin's verification:`);
-    console.log(`   Merkle Root: ${toHex(secretData.merkleRoot)}`);
-    console.log(`   Leaf: ${toHex(secretData.secrets[0])}`);
-    console.log(`   Proof: ${proof.map(p => toHex(new Uint8Array(p)))}`);
+    // Test OpenZeppelin's verification for both secrets
+    console.log(`   🔍 OpenZeppelin verification test for both secrets:`);
 
-    // Note: We're passing the raw secret to the Move contract
-    console.log(`   🔍 Passing raw secret to Move contract: ${toHex(secretData.secrets[0])}`);
-
-    // Test OpenZeppelin's verify function with correct API
-    console.log(`   🔍 OpenZeppelin verification test:`);
-
-    // Get the proof as hex strings
-    const proofHexStrings = proof.map(p => toHex(new Uint8Array(p)));
-    const leafHex = toHex(secretData.secrets[0]); // Raw secret (not hashed)
+    // Verify start secret (Secret 1)
+    const startProofHexStrings = startProof.map(p => toHex(new Uint8Array(p)));
+    const startLeafHex = toHex(secretData.secrets[0]);
     const rootHex = toHex(secretData.merkleRoot);
 
-    console.log(`   Root: ${rootHex}`);
-    console.log(`   Leaf: ${leafHex}`);
-    console.log(`   Proof: ${proofHexStrings}`);
-
-    // Use the correct OpenZeppelin API: SimpleMerkleTree.verify(root, leaf, proof)
     try {
-        const ozVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, leafHex as `0x${string}`, proofHexStrings as `0x${string}`[]);
-        console.log(`   OpenZeppelin verification result: ${ozVerification}`);
+        const startVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, startLeafHex as `0x${string}`, startProofHexStrings as `0x${string}`[]);
+        console.log(`   Start secret (Secret 1) verification: ${startVerification}`);
 
-        if (!ozVerification) {
-            console.log(`   ❌ OpenZeppelin verification failed!`);
+        if (!startVerification) {
+            console.log(`   ❌ Start secret verification failed!`);
             return;
         }
-        console.log(`   ✅ OpenZeppelin verification passed!`);
     } catch (error) {
-        console.log(`   ❌ OpenZeppelin verification error: ${error}`);
+        console.log(`   ❌ Start secret verification error: ${error}`);
+        return;
+    }
 
-        // Fallback to manual verification
-        console.log(`   🔍 Manual verification fallback:`);
-        let computedHash = hexToBytes(keccak256(secretData.secrets[0]));
-        console.log(`   Starting with hashed secret: ${toHex(computedHash)}`);
+    // Verify end secret (Secret 5)
+    const endProofHexStrings = endProof.map(p => toHex(new Uint8Array(p)));
+    const endLeafHex = toHex(secretData.secrets[4]);
 
-        for (let i = 0; i < proof.length; i++) {
-            const proofElement = new Uint8Array(proof[i]);
-            console.log(`   Step ${i}: current=${toHex(computedHash)}, proof=${toHex(proofElement)}`);
+    try {
+        const endVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, endLeafHex as `0x${string}`, endProofHexStrings as `0x${string}`[]);
+        console.log(`   End secret (Secret 5) verification: ${endVerification}`);
 
-            const combined = new Uint8Array([...computedHash, ...proofElement]);
-            computedHash = hexToBytes(keccak256(combined));
-            console.log(`   Step ${i} result: ${toHex(computedHash)}`);
-        }
-
-        console.log(`   Final computed root: ${toHex(computedHash)}`);
-        console.log(`   Expected root: ${toHex(secretData.merkleRoot)}`);
-        const verificationResult = toHex(computedHash) === toHex(secretData.merkleRoot);
-        console.log(`   Manual verification result: ${verificationResult}`);
-
-        if (!verificationResult) {
-            console.log(`   ❌ Manual verification failed! The proof is invalid.`);
+        if (!endVerification) {
+            console.log(`   ❌ End secret verification failed!`);
             return;
         }
-        console.log(`   ✅ Manual verification passed! Proof is valid.`);
+        console.log(`   ✅ Both secrets verified successfully!`);
+    } catch (error) {
+        console.log(`   ❌ End secret verification error: ${error}`);
+        return;
     }
 
     const [withdrawnCoin, optionalReward] = withdrawTx.moveCall({
-        target: `${PACKAGE_ID}::srcescrow::withdraw_partial_single_authorized`,
+        target: `${PACKAGE_ID}::srcescrow::withdraw_partial_range_authorized`,
         arguments: [
             withdrawTx.sharedObjectRef({
                 objectId: escrowId,
@@ -499,10 +480,13 @@ async function bobWithdrawsWithRelayerSignature(
                 initialSharedVersion: factoryVersion,
                 mutable: true
             }),
-            withdrawTx.pure.vector('u8', secret),
-            withdrawTx.pure('vector<vector<u8>>', proof),
-            withdrawTx.pure.u64(1), // secret_index (1-based) - Secret 1
-            withdrawTx.pure.u64(partSize), // desired_fill_amount
+            withdrawTx.pure.vector('u8', startSecret),
+            withdrawTx.pure.vector('u8', endSecret),
+            withdrawTx.pure('vector<vector<u8>>', startProof),
+            withdrawTx.pure('vector<vector<u8>>', endProof),
+            withdrawTx.pure.u64(1), // start_secret_index (1-based) - Secret 1
+            withdrawTx.pure.u64(5), // end_secret_index (1-based) - Secret 5
+            withdrawTx.pure.u64(5 * partSize), // desired_fill_amount - 5 parts
             withdrawTx.pure.vector('u8', Array.from(Buffer.from(signatureResult.signature, 'base64'))),
             withdrawTx.pure.vector('u8', Array.from(eveKeypair.getPublicKey().toSuiBytes())),
             withdrawTx.pure.address(bobAddress), // authorized_resolver
@@ -775,7 +759,6 @@ async function demonstrateRelayerSignatureEscrow() {
         throw new Error("Failed to create escrow");
     }
 
-    console.log(`✅ Escrow created successfully: ${escrowId}`);
 
     // Wait for escrow to be indexed
     console.log("⏳ Waiting 3 seconds for escrow indexing...");
