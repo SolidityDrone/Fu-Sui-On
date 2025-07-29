@@ -537,14 +537,7 @@ public fun withdraw_partial_range(
     assert!(actual_fill_amount > 0, EINVALID_FILL_AMOUNT);
     assert!(balance::value(&escrow.balance) >= actual_fill_amount, EINVALID_AMOUNT);
     
-    // Mark all secrets in the range as used (nullify them)
-    // For range withdrawal, we only nullify the start and end secrets
-    // The range withdrawal is only valid if both start and end secrets are provided
-    // This prevents double-spending of the same range
-    let start_nullifier = keccak256(&start_secret);
-    let end_nullifier = keccak256(&end_secret);
-    
-    // Mark both nullifiers as used
+    // Mark both nullifiers as used (already calculated above)
     table::add(&mut factory.shared_nullifiers, start_nullifier, true);
     table::add(&mut factory.shared_nullifiers, end_nullifier, true);
     
@@ -591,7 +584,7 @@ public fun withdraw_full(
 ): (Coin<SUI>, option::Option<Coin<SUI>>) {
     assert!(!escrow.is_resolved, EESCROW_ALREADY_RESOLVED);
     
-    let sender = tx_context::sender(ctx);
+    let _sender = tx_context::sender(ctx);
     let current_window = get_current_window(&escrow, clock);
     
     // Check time window permissions
@@ -644,12 +637,12 @@ public fun withdraw_full(
     let main_coin = coin::from_balance(balance, ctx);
     
     // Transfer all funds to the beneficiary (maker from srcEscrow)
-    sui::transfer::public_transfer(main_coin, escrow.beneficiary_address);
+    sui::transfer::public_transfer(main_coin, beneficiary_address);
     
     // Transfer deposit fee to beneficiary as well
     if (balance::value(&deposit_fee) > 0) {
         let reward_coin = coin::from_balance(deposit_fee, ctx);
-        sui::transfer::public_transfer(reward_coin, escrow.beneficiary_address);
+        sui::transfer::public_transfer(reward_coin, beneficiary_address);
     } else {
         balance::destroy_zero(deposit_fee);
     };
@@ -678,7 +671,7 @@ public fun anyone_refund_to_depositors(
     // Extract balance and deposit fee
     let Escrow { 
         id, 
-        balance, 
+        mut balance, 
         deposit_fee,
         merkle_root: _, 
         beneficiary_address, 
@@ -699,14 +692,14 @@ public fun anyone_refund_to_depositors(
     // In a more complex implementation, you might want to track exact amounts per depositor
     
     let remaining_balance = balance::value(&balance);
-    let remaining_parts = escrow.num_parts - (escrow.filled_amount / escrow.part_size);
+    let remaining_parts = num_parts - (filled_amount / part_size);
     
     if (remaining_parts > 0) {
         // Distribute remaining funds to depositors
         let refund_per_part = remaining_balance / remaining_parts;
         
         let mut i = 1;
-        while (i <= escrow.num_parts) {
+        while (i <= num_parts) {
             if (table::contains(&factory.part_deposits, i)) {
                 let depositor = *table::borrow(&factory.part_deposits, i);
                 let refund_coin = coin::from_balance(balance::split(&mut balance, refund_per_part), ctx);
@@ -727,7 +720,7 @@ public fun anyone_refund_to_depositors(
     // Transfer deposit fee back to beneficiary
     if (balance::value(&deposit_fee) > 0) {
         let deposit_coin = coin::from_balance(deposit_fee, ctx);
-        sui::transfer::public_transfer(deposit_coin, escrow.beneficiary_address);
+        sui::transfer::public_transfer(deposit_coin, beneficiary_address);
     } else {
         balance::destroy_zero(deposit_fee);
     };
