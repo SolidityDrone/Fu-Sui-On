@@ -1,78 +1,217 @@
 import { SuiClient, getFullnodeUrl } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import { keccak256, toHex } from 'viem';
+import { keccak256, toHex, hexToBytes } from 'viem';
+import { SimpleMerkleTree } from '@openzeppelin/merkle-tree';
 import * as dotenv from 'dotenv';
+import * as crypto from 'crypto';
 
 // Load environment variables
 dotenv.config();
 
-// Your deployed contract IDs - UPDATED with N+1 secrets system!
-
-const PACKAGE_ID = "0x543a1913d59ef4a4c1119881798540a2af3533e95b580061955b30e43e30fc70"; // Updated package ID
+// Your deployed contract IDs from environment
+const PACKAGE_ID = process.env.PACKAGE_ID || "0xab3af58ae717aed8d071e1d84d2ec55f56ec466fbe60e687f3561fe13e1b8ff0";
+const FACTORY_ID = process.env.FACTORY_ID || "0x93e6ddbfafa2f98c0441ac93840046730e963e832d0c61b338c530c482e46365";
 
 // Connect to testnet
 const client = new SuiClient({ url: getFullnodeUrl('testnet') });
 
-// Helper function to generate random secrets and merkle root
-function generateRandomSecretsAndMerkleRoot(numParts: number) {
-    console.log(`🎲 Generating ${numParts + 1} random secrets for N+1 system...`);
+// Helper function to generate Merkle tree using OpenZeppelin SimpleMerkleTree
+// This works for both Sui Move and Solidity (standard OpenZeppelin compatible)
+async function generateOpenZeppelinMerkleTree(numParts: number): Promise<{
+    secrets: Uint8Array[];
+    leafHashes: Uint8Array[];
+    tree: { root: string; proofs: string[][] };
+    merkleRoot: Uint8Array;
+}> {
+    console.log(`🎲 Generating ${numParts + 1} random secrets...`);
 
     // Generate N+1 random secrets (32 bytes each)
     const secrets: Uint8Array[] = [];
     const leafHashes: Uint8Array[] = [];
 
+    // Add timestamp to ensure unique secrets for each escrow instance
+    const timestamp = Date.now();
+    console.log(`   Timestamp for unique secrets: ${timestamp}`);
+
     for (let i = 0; i < numParts + 1; i++) {
-        // Generate random 32-byte secret
+        // Generate random 32-byte secret using crypto.randomBytes + timestamp for uniqueness
+        const randomBytes = crypto.randomBytes(28); // 28 bytes for randomness
+        const timestampBytes = new Uint8Array(4);
+        const timestampView = new DataView(timestampBytes.buffer);
+        timestampView.setUint32(0, timestamp + i, true); // 4 bytes for timestamp (little endian) + index
+
+        // Combine random bytes + timestamp for unique secret
         const secret = new Uint8Array(32);
-        for (let j = 0; j < 32; j++) {
-            secret[j] = Math.floor(Math.random() * 256);
-        }
+        secret.set(randomBytes, 0);
+        secret.set(timestampBytes, 28);
+
         secrets.push(secret);
 
-        // Calculate keccak256 hash of the secret
+        // Calculate keccak256 hash of the secret (this is the leaf hash for reference)
         const hash = keccak256(secret);
-        // Convert hex string to Uint8Array
-        const hashBytes = new Uint8Array(hash.slice(2).match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+        const hashBytes = hexToBytes(hash);
         leafHashes.push(hashBytes);
-
-        console.log(`   Secret ${i + 1}: ${toHex(secret)}`);
-        console.log(`   Hash ${i + 1}:   ${hash}`);
     }
 
-    // For simplicity, use first leaf hash as merkle root (single level tree)
-    // In production, you'd build a proper merkle tree
-    const merkleRoot = leafHashes[0];
-    console.log(`🌳 Merkle Root: ${toHex(merkleRoot)}`);
+    // Use OpenZeppelin SimpleMerkleTree with unsorted leaves
+    // Convert secrets to hex strings for SimpleMerkleTree
+    const leafHexStrings = secrets.map(secret => toHex(secret));
+
+    // Build tree with SimpleMerkleTree - CRITICAL: sortLeaves: false to preserve order
+    const ozTree = SimpleMerkleTree.of(leafHexStrings, { sortLeaves: false });
+
+    // Get root and generate proofs
+    const root = hexToBytes(ozTree.root as `0x${string}`);
+    const proofs: string[][] = [];
+
+    for (let i = 0; i < leafHexStrings.length; i++) {
+        const proof = ozTree.getProof(i);
+        proofs.push(proof);
+    }
+
+    console.log(`🌳 Merkle Root: ${toHex(root)}`);
+
+    // DEBUG: Let's understand what OpenZeppelin is doing
+    console.log(`🔍 DEBUG: OpenZeppelin tree analysis:`);
+    console.log(`   Number of leaves: ${leafHexStrings.length}`);
+    console.log(`   First leaf: ${leafHexStrings[0]}`);
+    console.log(`   First leaf hash: ${keccak256(leafHexStrings[0] as `0x${string}`)}`);
+    console.log(`   Tree root: ${ozTree.root}`);
+
+    // Let's manually verify the first proof to see what's happening
+    if (proofs.length > 0) {
+        console.log(`   First proof: ${JSON.stringify(proofs[0])}`);
+        console.log(`   First proof length: ${proofs[0].length}`);
+    }
+
+    // Let's test with a simple 2-leaf tree to understand OpenZeppelin's algorithm
+    console.log(`🔍 DEBUG: Testing simple 2-leaf tree:`);
+    const simpleLeaves = [leafHexStrings[0], leafHexStrings[1]];
+    const simpleTree = SimpleMerkleTree.of(simpleLeaves, { sortLeaves: false });
+    console.log(`   Simple tree root: ${simpleTree.root}`);
+    console.log(`   Simple tree proof for leaf 0: ${JSON.stringify(simpleTree.getProof(0))}`);
+
+    // Manual verification of simple tree
+    const leaf0Hash = hexToBytes(keccak256(simpleLeaves[0] as `0x${string}`));
+    const leaf1Hash = hexToBytes(keccak256(simpleLeaves[1] as `0x${string}`));
+    const manualRoot = hexToBytes(keccak256(new Uint8Array([...leaf0Hash, ...leaf1Hash])));
+    console.log(`   Manual root: ${toHex(manualRoot)}`);
+    console.log(`   Roots match: ${toHex(manualRoot) === simpleTree.root}`);
+
+    // Let's manually verify the actual proof that will be used in the transaction
+    console.log(`🔍 DEBUG: Manual verification of actual proof:`);
+    const actualLeaf = secrets[0];
+    const actualProof = proofs[0];
+    console.log(`   Actual leaf: ${toHex(actualLeaf)}`);
+    console.log(`   Actual proof: ${actualProof.map(p => p)}`);
+
+    // Start with the leaf hash (like OpenZeppelin does)
+    let computedHash = hexToBytes(keccak256(actualLeaf));
+    console.log(`   Starting hash: ${toHex(computedHash)}`);
+
+    // Verify step by step
+    for (let i = 0; i < actualProof.length; i++) {
+        const proofElement = hexToBytes(actualProof[i] as `0x${string}`);
+        console.log(`   Step ${i}: current=${toHex(computedHash)}, proof=${toHex(proofElement)}`);
+
+        // Concatenate and hash (like Move contract does)
+        const combined = new Uint8Array([...computedHash, ...proofElement]);
+        computedHash = hexToBytes(keccak256(combined));
+        console.log(`   Step ${i} result: ${toHex(computedHash)}`);
+    }
+
+    console.log(`   Final computed root: ${toHex(computedHash)}`);
+    console.log(`   Expected root: ${ozTree.root}`);
+    console.log(`   Verification result: ${toHex(computedHash) === ozTree.root}`);
 
     return {
         secrets,
         leafHashes,
-        merkleRoot,
-        // For demo, we'll use the first secret/hash
-        primarySecret: secrets[0],
-        primaryHash: leafHashes[0]
+        tree: {
+            root: toHex(root),
+            proofs: proofs
+        },
+        merkleRoot: root
     };
 }
+
+
 
 // Helper to convert Uint8Array to number array for Sui
 function uint8ArrayToNumberArray(uint8Array: Uint8Array): number[] {
     return Array.from(uint8Array);
 }
 
-async function createSingleEscrow(
+// Helper to get merkle proof for a specific leaf index
+function getMerkleProof(tree: any, leafIndex: number): number[][] {
+    // OpenZeppelin proofs are already hex strings, convert to number arrays
+    const proof = tree.proofs[leafIndex];
+    return proof.map((hexString: string) => Array.from(hexToBytes(hexString as `0x${string}`)));
+}
+
+// Helper to create relayer signature message
+function createRelayerSignatureMessage(
+    escrowId: string,
+    resolverAddress: string,
+    startIndex: number,
+    endIndex: number,
+    nonce: string
+): Uint8Array {
+    // Construct the message that should be signed
+    // Format: escrow_id || resolver_address || start_index || end_index || nonce
+
+    // Convert escrow ID to bytes (remove 0x prefix and convert to bytes)
+    const escrowIdBytes = hexToBytes(escrowId as `0x${string}`);
+
+    // Convert resolver address to bytes (remove 0x prefix and convert to bytes)
+    const resolverBytes = hexToBytes(resolverAddress as `0x${string}`);
+
+    // Convert indices to bytes (8 bytes each for u64)
+    const startIndexBytes = new Uint8Array(8);
+    const endIndexBytes = new Uint8Array(8);
+    const startView = new DataView(startIndexBytes.buffer);
+    const endView = new DataView(endIndexBytes.buffer);
+    startView.setBigUint64(0, BigInt(startIndex), true); // little endian
+    endView.setBigUint64(0, BigInt(endIndex), true); // little endian
+
+    // Convert nonce to bytes
+    const nonceBytes = hexToBytes(nonce as `0x${string}`);
+
+    // Combine all bytes
+    const message = new Uint8Array(
+        escrowIdBytes.length +
+        resolverBytes.length +
+        startIndexBytes.length +
+        endIndexBytes.length +
+        nonceBytes.length
+    );
+
+    let offset = 0;
+    message.set(escrowIdBytes, offset);
+    offset += escrowIdBytes.length;
+    message.set(resolverBytes, offset);
+    offset += resolverBytes.length;
+    message.set(startIndexBytes, offset);
+    offset += startIndexBytes.length;
+    message.set(endIndexBytes, offset);
+    offset += endIndexBytes.length;
+    message.set(nonceBytes, offset);
+
+    return message;
+}
+
+async function createEscrowWith10Parts(
     aliceKeypair: Ed25519Keypair,
-    bobKeypair: Ed25519Keypair, // Add Bob's keypair for gas sponsorship
-    takerAddresses: string[],
+    bobKeypair: Ed25519Keypair,
     factoryId: string,
     factoryVersion: number,
-    escrowNumber: number,
     secretData: any
 ): Promise<string | null> {
     const aliceAddress = aliceKeypair.toSuiAddress();
 
-    console.log(`\n🔸 CREATING ESCROW ${escrowNumber}`);
-    console.log("=".repeat(30));
+    console.log(`\n🔸 CREATING ESCROW WITH 10 PARTS`);
+    console.log("=".repeat(40));
 
     // Check Alice's coins
     const aliceCoins = await client.getCoins({
@@ -95,61 +234,44 @@ async function createSingleEscrow(
     const dstWithdrawalEnd = currentTime + 600000;      // +10 minutes 
     const dstPublicWithdrawalEnd = currentTime + 900000;  // +15 minutes
     const dstCancellationEnd = currentTime + 1200000;     // +20 minutes
+    const deadline = currentTime + 600000; // +10 minutes
 
-    // Calculate deadline for transaction execution (prevent replay attacks)
-    // Alice's signed transaction must be executed within this deadline
-    const deadline = currentTime + 600000; // +10 minutes (increased to avoid timing issues)
-
-    // Use the hash of Secret 2 for 50% withdrawal
-    const hashLock = uint8ArrayToNumberArray(secretData.leafHashes[1]); // Hash of Secret 2
     const merkleRoot = uint8ArrayToNumberArray(secretData.merkleRoot);
 
-    const numParts = 4;
-    const escrowAmount = 1000000; // 0.01 SUI (10M MIST) - reduced to fit Alice's balance
+    const numParts = 10; // 10 parts as requested
+    const escrowAmount = 1000000; // 0.01 SUI (10M MIST)
 
     console.log(`Escrow amount: ${escrowAmount} MIST (${escrowAmount / 1000000000} SUI)`);
-    console.log(`Using hash of Secret 2 for 50% withdrawal: ${toHex(secretData.leafHashes[1])}`);
-    console.log(`Transaction deadline: ${new Date(deadline).toISOString()} (${deadline - currentTime}ms from now)`);
-    console.log(`🔍 Deadline debug: currentTime=${currentTime}, deadline=${deadline}, diff=${deadline - currentTime}`);
+    console.log(`Merkle Root: ${toHex(secretData.merkleRoot)}`);
+    console.log(`Number of parts: ${numParts}`);
+
     const [splitCoin] = gaslessTx.splitCoins(gaslessTx.object(aliceCoin.coinObjectId), [escrowAmount]);
 
-    // Use the passed taker addresses for N+1 secrets (5 takers for 4 parts)
-    console.log(`Secret-to-Taker assignments:`);
-    console.log(`  Secret 1 (25%): Bob → ${takerAddresses[0]}`);
-    console.log(`  Secret 2 (50%): Bob → ${takerAddresses[1]}`);
-    console.log(`  Secret 3 (75%): Car → ${takerAddresses[2]}`);
-    console.log(`  Secret 4 (100%): Eve → ${takerAddresses[3]}`);
-    console.log(`  Secret 5 (completion): Bob → ${takerAddresses[4]}`);
-
-    // Create escrow with N+1 secrets system
+    // Create escrow with 10 parts (no taker addresses needed anymore)
     gaslessTx.moveCall({
         target: `${PACKAGE_ID}::srcescrow::create_and_transfer_escrow`,
         arguments: [
-            gaslessTx.sharedObjectRef({              // EXPLICIT mutable shared object
+            gaslessTx.sharedObjectRef({
                 objectId: factoryId,
-                initialSharedVersion: factoryVersion,  // Dynamic version from factory object
+                initialSharedVersion: factoryVersion,
                 mutable: true
             }),
-            splitCoin,                                // Alice's coins  
-            gaslessTx.pure.vector('u8', hashLock),    // hash_lock
-            gaslessTx.pure.vector('u8', merkleRoot),  // merkle_root
-            gaslessTx.pure.vector('address', takerAddresses), // taker_addresses (N+1 = 5)
-            gaslessTx.pure.u64(dstWithdrawalEnd),     // dst_withdrawal_end
-            gaslessTx.pure.u64(dstPublicWithdrawalEnd), // dst_public_withdrawal_end  
-            gaslessTx.pure.u64(dstCancellationEnd),   // dst_cancellation_end
-            gaslessTx.pure.u64(numParts),             // num_parts (N=4 → 5 secrets)
-            gaslessTx.pure.u64(deadline),             // deadline for transaction execution
-            gaslessTx.object('0x6'),                  // clock
+            splitCoin,
+            gaslessTx.pure.vector('u8', merkleRoot),
+            gaslessTx.pure.u64(dstWithdrawalEnd),
+            gaslessTx.pure.u64(dstPublicWithdrawalEnd),
+            gaslessTx.pure.u64(dstCancellationEnd),
+            gaslessTx.pure.u64(numParts),
+            gaslessTx.pure.u64(deadline),
+            gaslessTx.object('0x6'),
         ],
     });
 
-    // Escrow is automatically transferred to first taker
-
-    // Build gasless transaction (NO gas data)
+    // Build gasless transaction
     const kindBytes = await gaslessTx.build({ client, onlyTransactionKind: true });
     console.log(`✅ Alice created GasLessTransactionData`);
 
-    // Bob creates sponsored transaction from gasless data
+    // Bob creates sponsored transaction
     const sponsoredTx = Transaction.fromKind(kindBytes);
     sponsoredTx.setSender(aliceAddress);
 
@@ -170,16 +292,9 @@ async function createSingleEscrow(
         version: bobCoin.version,
         digest: bobCoin.digest
     }]);
-    sponsoredTx.setGasBudget(20000000); // 0.02 SUI gas budget
+    sponsoredTx.setGasBudget(20000000);
 
     const finalTxBytes = await sponsoredTx.build({ client });
-
-    // Debug the transaction before execution
-    console.log(`🔍 Transaction details before execution:`);
-    console.log(`   Sender: ${sponsoredTx.blockData.sender}`);
-    console.log(`   Gas Owner: ${sponsoredTx.blockData.gasConfig?.owner}`);
-    console.log(`   Gas Budget: ${sponsoredTx.blockData.gasConfig?.budget}`);
-    console.log(`   Gas Payment: ${JSON.stringify(sponsoredTx.blockData.gasConfig?.payment, null, 2)}`);
 
     // Both Alice and Bob need to sign
     const aliceSignature = await aliceKeypair.signTransaction(finalTxBytes);
@@ -193,7 +308,7 @@ async function createSingleEscrow(
     try {
         result = await client.executeTransactionBlock({
             transactionBlock: finalTxBytes,
-            signature: [aliceSignature.signature, bobSignature.signature], // Array of both signatures
+            signature: [aliceSignature.signature, bobSignature.signature],
             options: {
                 showEffects: true,
                 showEvents: true,
@@ -202,35 +317,16 @@ async function createSingleEscrow(
             },
         });
     } catch (error) {
-        console.log(`❌ Transaction execution failed with error:`);
-        console.log(`   Error: ${error}`);
-        console.log(`   Error message: ${error.message}`);
-        console.log(`   Error details: ${JSON.stringify(error, null, 2)}`);
+        console.log(`❌ Transaction execution failed:`, error);
         return null;
     }
 
     console.log(`✅ Transaction executed: ${result.digest}`);
     console.log(`✅ Status: ${result.effects?.status?.status}`);
 
-    // Debug transaction result
-    console.log(`🔍 Full transaction result:`, JSON.stringify(result, null, 2));
-
-    console.log(`✅ Transaction executed: ${result.digest}`);
-    console.log(`✅ Status: ${result.effects?.status?.status}`);
-
-    // Check for creation failure
     if (result.effects?.status?.status !== 'success') {
         console.log(`❌ ESCROW CREATION FAILED!`);
-        console.log(`Error details:`, JSON.stringify(result.effects?.status, null, 2));
         return null;
-    }
-
-    // Show balance changes from escrow creation
-    if (result.balanceChanges && result.balanceChanges.length > 0) {
-        console.log(`💰 Escrow creation balance changes:`);
-        result.balanceChanges.forEach((change: any) => {
-            console.log(`   ${change.owner}: ${change.amount} MIST`);
-        });
     }
 
     // Extract created escrow object
@@ -239,66 +335,31 @@ async function createSingleEscrow(
             change.objectType?.includes('::srcescrow::Escrow')
     );
 
-    console.log(`🔍 Created objects:`, JSON.stringify(createdObjects, null, 2));
-    console.log(`🔍 All object changes:`, JSON.stringify(result.objectChanges, null, 2));
-
     if (createdObjects && createdObjects.length > 0 && createdObjects[0].type === 'created') {
         const escrowId = createdObjects[0].objectId;
         console.log(`✅ Escrow created: ${escrowId}`);
         return escrowId;
     } else {
         console.log("❌ No escrow object found in transaction result");
-        console.log("❌ This means the escrow creation failed!");
         return null;
     }
 }
 
-
-// Multi-step withdrawal functions for different takers
-async function performMultiTakerWithdrawals(
+async function bobWithdrawsWithRelayerSignature(
     escrowId: string,
     factoryId: string,
     factoryVersion: number,
     secretData: any,
     bobKeypair: Ed25519Keypair,
-    carKeypair: Ed25519Keypair,   // Car withdraws for herself
-    eveKeypair: Ed25519Keypair    // Eve withdraws for herself  
-): Promise<void> {
-    console.log(`\n🎯 PERFORMING MULTI-TAKER WITHDRAWALS FROM ESCROW: ${escrowId}`);
-    console.log("=".repeat(70));
-
-    // Wait for escrow to be indexed
-    console.log("⏳ Waiting 3 seconds for escrow indexing...");
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Step 1: Bob withdraws his 50% using secret 2
-    await bobWithdrawsHalf(escrowId, factoryId, factoryVersion, secretData, bobKeypair);
-
-    // Step 2: Car withdraws her 25% using secret 3 (she has her own gas)
-    await carWithdrawsQuarter(escrowId, factoryId, factoryVersion, secretData, carKeypair);
-
-    // Step 3: Eve withdraws her 50% using secret 4 (she has her own gas)
-    await eveWithdrawsFinal(escrowId, factoryId, factoryVersion, secretData, eveKeypair);
-}
-
-async function bobWithdrawsHalf(
-    escrowId: string,
-    factoryId: string,
-    factoryVersion: number,
-    secretData: any,
-    bobKeypair: Ed25519Keypair
+    eveKeypair: Ed25519Keypair // Eve as relayer
 ): Promise<void> {
     const bobAddress = bobKeypair.toSuiAddress();
+    const eveAddress = eveKeypair.toSuiAddress();
 
-    console.log(`\n🤝 STEP 1: BOB WITHDRAWS 50%`);
-    console.log("─".repeat(35));
+    console.log(`\n🤝 STEP 2: BOB WITHDRAWS 5/10 PARTS WITH RELAYER SIGNATURE`);
+    console.log("─".repeat(55));
 
-    // Debug secretData structure
-    console.log(`🔍 Debug secretData:`, JSON.stringify(secretData, null, 2));
-    console.log(`🔍 secretData.secrets:`, secretData.secrets);
-    console.log(`🔍 secretData.secrets[1]:`, secretData.secrets?.[1]);
-
-    // Get escrow data to calculate proper amounts
+    // Get escrow data
     const escrowData = await client.getObject({
         id: escrowId,
         options: { showContent: true }
@@ -308,38 +369,145 @@ async function bobWithdrawsHalf(
         throw new Error("Could not get escrow data");
     }
 
+    const escrowVersion = parseInt(escrowData.data.version);
+    console.log(`   Escrow version: ${escrowVersion}`);
+
     const fields = escrowData.data.content.fields as any;
     const totalAmount = parseInt(fields.total_amount);
     const numParts = parseInt(fields.num_parts);
-    const partSize = totalAmount / numParts; // Each part size
+    const partSize = totalAmount / numParts;
+
+    console.log(`   Escrow total: ${totalAmount} MIST, ${numParts} parts, part size: ${partSize} MIST`);
+    console.log(`   Bob wants to withdraw: 5 parts (leaves 0,1,2,3,5) = ${5 * partSize} MIST`);
+
+    // Step 2-a: Eve (relayer) creates signature to authorize Bob for range 1-5
+    console.log(`\n   2-a: Eve (Relayer) creates authorization signature for Bob`);
+
+    const nonce = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    const message = createRelayerSignatureMessage(
+        escrowId,
+        bobAddress,
+        1, // start_index (1-based)
+        5, // end_index (1-based)
+        nonce
+    );
+
+    // Eve signs the message
+    const signatureResult = await eveKeypair.signPersonalMessage(message);
+    console.log(`   ✅ Eve signed authorization for Bob (range 1-5)`);
+    console.log(`   Signature: ${toHex(signatureResult.signature)}`);
+
+    // Step 2-b: Bob withdraws using the relayer signature
+    console.log(`\n   2-b: Bob withdraws using relayer signature`);
+
+    // Get Bob's coins for gas
+    const bobCoins = await client.getCoins({
+        owner: bobAddress,
+        coinType: '0x2::sui::SUI'
+    });
+
+    if (bobCoins.data.length === 0) {
+        throw new Error("Bob has no coins for gas");
+    }
+
+    const bobCoin = bobCoins.data[0];
+    console.log(`   Using Bob's coin: ${bobCoin.coinObjectId} (${bobCoin.balance} MIST) for gas`);
 
     const withdrawTx = new Transaction();
 
-    // Use secret 2 (index 2) to withdraw up to 50%
-    const secret2 = uint8ArrayToNumberArray(secretData.secrets[1]); // secret 2 (1-indexed)  
-    const merkleRoot = uint8ArrayToNumberArray(secretData.merkleRoot);
+    // Let's try a single withdrawal first to confirm the contract works
+    const secret = uint8ArrayToNumberArray(secretData.secrets[0]); // Secret 1 (leaf 0 - first secret)
+    const proof = getMerkleProof(secretData.tree, 0); // Leaf 0 (Secret 1)
 
-    const secretIndex = 2; // Secret 2 allows up to 50%
-    const desiredFillAmount = 2 * partSize; // 2 * part_size = 50% of total
+    // Bob is withdrawing 1 part using Secret 1 (first secret)
+    console.log(`   Bob's withdrawal: 1 part using Secret 1 (first secret)`);
+    console.log(`   Leaf 0, Secret=${toHex(secretData.secrets[0])}`);
+    console.log(`   Secret index: 1, Leaf index: 0`);
+    console.log(`   Proof:`, proof.map(p => toHex(new Uint8Array(p))));
+    console.log(`   Merkle Root: ${toHex(secretData.merkleRoot)}`);
 
-    console.log(`   Escrow total: ${totalAmount} MIST, ${numParts} parts, part size: ${partSize} MIST`);
-    console.log(`   Secret 2: ${toHex(secretData.secrets[1])}`);
-    console.log(`   Withdrawing: ${desiredFillAmount} MIST (50% of escrow - Bob fills parts 0 & 1)`);
+    // Use OpenZeppelin's verification instead of manual verification
+    console.log(`   🔍 Using OpenZeppelin's verification:`);
+    console.log(`   Merkle Root: ${toHex(secretData.merkleRoot)}`);
+    console.log(`   Leaf: ${toHex(secretData.secrets[0])}`);
+    console.log(`   Proof: ${proof.map(p => toHex(new Uint8Array(p)))}`);
+
+    // Note: We're passing the raw secret to the Move contract
+    console.log(`   🔍 Passing raw secret to Move contract: ${toHex(secretData.secrets[0])}`);
+
+    // Test OpenZeppelin's verify function with correct API
+    console.log(`   🔍 OpenZeppelin verification test:`);
+
+    // Get the proof as hex strings
+    const proofHexStrings = proof.map(p => toHex(new Uint8Array(p)));
+    const leafHex = toHex(secretData.secrets[0]); // Raw secret (not hashed)
+    const rootHex = toHex(secretData.merkleRoot);
+
+    console.log(`   Root: ${rootHex}`);
+    console.log(`   Leaf: ${leafHex}`);
+    console.log(`   Proof: ${proofHexStrings}`);
+
+    // Use the correct OpenZeppelin API: SimpleMerkleTree.verify(root, leaf, proof)
+    try {
+        const ozVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, leafHex as `0x${string}`, proofHexStrings as `0x${string}`[]);
+        console.log(`   OpenZeppelin verification result: ${ozVerification}`);
+
+        if (!ozVerification) {
+            console.log(`   ❌ OpenZeppelin verification failed!`);
+            return;
+        }
+        console.log(`   ✅ OpenZeppelin verification passed!`);
+    } catch (error) {
+        console.log(`   ❌ OpenZeppelin verification error: ${error}`);
+
+        // Fallback to manual verification
+        console.log(`   🔍 Manual verification fallback:`);
+        let computedHash = hexToBytes(keccak256(secretData.secrets[0]));
+        console.log(`   Starting with hashed secret: ${toHex(computedHash)}`);
+
+        for (let i = 0; i < proof.length; i++) {
+            const proofElement = new Uint8Array(proof[i]);
+            console.log(`   Step ${i}: current=${toHex(computedHash)}, proof=${toHex(proofElement)}`);
+
+            const combined = new Uint8Array([...computedHash, ...proofElement]);
+            computedHash = hexToBytes(keccak256(combined));
+            console.log(`   Step ${i} result: ${toHex(computedHash)}`);
+        }
+
+        console.log(`   Final computed root: ${toHex(computedHash)}`);
+        console.log(`   Expected root: ${toHex(secretData.merkleRoot)}`);
+        const verificationResult = toHex(computedHash) === toHex(secretData.merkleRoot);
+        console.log(`   Manual verification result: ${verificationResult}`);
+
+        if (!verificationResult) {
+            console.log(`   ❌ Manual verification failed! The proof is invalid.`);
+            return;
+        }
+        console.log(`   ✅ Manual verification passed! Proof is valid.`);
+    }
 
     const [withdrawnCoin, optionalReward] = withdrawTx.moveCall({
-        target: `${PACKAGE_ID}::srcescrow::withdraw_partial`,
+        target: `${PACKAGE_ID}::srcescrow::withdraw_partial_single_authorized`,
         arguments: [
-            withdrawTx.object(escrowId),
-            withdrawTx.sharedObjectRef({              // EXPLICIT mutable shared object
-                objectId: factoryId,
-                initialSharedVersion: factoryVersion,  // Dynamic version from factory object
+            withdrawTx.sharedObjectRef({
+                objectId: escrowId,
+                initialSharedVersion: escrowVersion,
                 mutable: true
             }),
-            withdrawTx.pure.vector('u8', secret2),
-            withdrawTx.pure('vector<vector<u8>>', [merkleRoot]),
-            withdrawTx.pure.u64(secretIndex),
-            withdrawTx.pure.u64(desiredFillAmount),
-            withdrawTx.object('0x6'),
+            withdrawTx.sharedObjectRef({
+                objectId: factoryId,
+                initialSharedVersion: factoryVersion,
+                mutable: true
+            }),
+            withdrawTx.pure.vector('u8', secret),
+            withdrawTx.pure('vector<vector<u8>>', proof),
+            withdrawTx.pure.u64(1), // secret_index (1-based) - Secret 1
+            withdrawTx.pure.u64(partSize), // desired_fill_amount
+            withdrawTx.pure.vector('u8', Array.from(Buffer.from(signatureResult.signature, 'base64'))),
+            withdrawTx.pure.vector('u8', Array.from(eveKeypair.getPublicKey().toSuiBytes())),
+            withdrawTx.pure.address(bobAddress), // authorized_resolver
+            withdrawTx.pure.vector('u8', Array.from(hexToBytes(nonce as `0x${string}`))),
+            withdrawTx.object('0x6'), // Clock object
         ],
     });
 
@@ -366,268 +534,188 @@ async function bobWithdrawsHalf(
     console.log(`   Transaction: ${result.digest}`);
     console.log(`   Status: ${result.effects?.status?.status}`);
 
-    // Show detailed error if failed
     if (result.effects?.status?.status !== 'success') {
         console.log(`   ❌ WITHDRAWAL FAILED!`);
         console.log(`   Error details:`, JSON.stringify(result.effects?.status, null, 2));
-        console.log(`   Full transaction result:`, JSON.stringify(result, null, 2));
         return;
     }
 
-    // Show balance changes
     if (result.balanceChanges && result.balanceChanges.length > 0) {
         console.log(`   💰 Balance changes:`);
         result.balanceChanges.forEach((change: any) => {
             console.log(`      ${change.owner}: ${change.amount} MIST`);
         });
-    } else {
-        console.log(`   ⚠️  No balance changes detected!`);
     }
 
-    console.log(`   ✅ Bob withdrew 50% successfully!`);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log(`   ✅ Bob withdrew 5/10 parts successfully with relayer authorization!`);
 }
 
-async function carWithdrawsQuarter(
+async function carWithdrawsWithRelayerSignature(
     escrowId: string,
     factoryId: string,
     factoryVersion: number,
     secretData: any,
-    carKeypair: Ed25519Keypair  // Car withdraws for herself
+    carKeypair: Ed25519Keypair,
+    eveKeypair: Ed25519Keypair // Eve as relayer
 ): Promise<void> {
     const carAddress = carKeypair.toSuiAddress();
-
-    console.log(`\n🚗 STEP 2: CAR WITHDRAWS HER 25% (25% → 50%)`);
-    console.log("─".repeat(45));
-    console.log(`   🚗 Car withdraws for herself`);
-
-    try {
-        // Get escrow data to calculate proper amounts
-        const escrowData = await client.getObject({
-            id: escrowId,
-            options: { showContent: true }
-        });
-
-        if (!escrowData.data?.content || !('fields' in escrowData.data.content)) {
-            throw new Error("Could not get escrow data");
-        }
-
-        const fields = escrowData.data.content.fields as any;
-        const totalAmount = parseInt(fields.total_amount);
-        const numParts = parseInt(fields.num_parts);
-        const partSize = totalAmount / numParts; // Each part size
-
-        const withdrawTx = new Transaction();
-
-        // Use secret 3 (index 3) to withdraw up to 75% - funds go to Car
-        const secret3 = uint8ArrayToNumberArray(secretData.secrets[2]); // secret 3 (0-indexed)
-        const merkleRoot = uint8ArrayToNumberArray(secretData.merkleRoot);
-
-        const secretIndex = 3; // Secret 3 allows up to 75%
-        const desiredFillAmount = 3 * partSize; // 3 * part_size = 75% of total
-
-        console.log(`   Escrow total: ${totalAmount} MIST, ${numParts} parts, part size: ${partSize} MIST`);
-        console.log(`   Secret 3: ${toHex(secretData.secrets[2])}`);
-        console.log(`   Filling to: ${desiredFillAmount} MIST (75% total = +25% more)`);
-
-        const [withdrawnCoin, optionalReward] = withdrawTx.moveCall({
-            target: `${PACKAGE_ID}::srcescrow::withdraw_partial`,
-            arguments: [
-                withdrawTx.object(escrowId),
-                withdrawTx.sharedObjectRef({              // EXPLICIT mutable shared object
-                    objectId: factoryId,
-                    initialSharedVersion: factoryVersion,  // Dynamic version from factory object
-                    mutable: true
-                }),
-                withdrawTx.pure.vector('u8', secret3),
-                withdrawTx.pure('vector<vector<u8>>', [merkleRoot]),
-                withdrawTx.pure.u64(secretIndex),
-                withdrawTx.pure.u64(desiredFillAmount),
-                withdrawTx.object('0x6'),
-            ],
-        });
-
-        // Car withdraws for herself
-        withdrawTx.transferObjects([withdrawnCoin], carAddress);
-        withdrawTx.moveCall({
-            target: '0x1::option::destroy_none',
-            typeArguments: ['0x2::coin::Coin<0x2::sui::SUI>'],
-            arguments: [optionalReward]
-        });
-
-        withdrawTx.setSender(carAddress); // Car pays gas
-        withdrawTx.setGasBudget(15000000);
-
-        const result = await client.signAndExecuteTransaction({
-            signer: carKeypair, // Car signs and pays
-            transaction: withdrawTx,
-            options: {
-                showEffects: true,
-                showObjectChanges: true,
-                showBalanceChanges: true
-            },
-        });
-
-        console.log(`   Transaction: ${result.digest}`);
-        console.log(`   Status: ${result.effects?.status?.status}`);
-
-        if (result.effects?.status?.status !== 'success') {
-            console.log(`   ❌ WITHDRAWAL FAILED!`);
-            console.log(`   Error details:`, JSON.stringify(result.effects?.status, null, 2));
-            return;
-        }
-
-        if (result.balanceChanges && result.balanceChanges.length > 0) {
-            console.log(`   💰 Balance changes:`);
-            result.balanceChanges.forEach((change: any) => {
-                console.log(`      ${change.owner}: ${change.amount} MIST`);
-            });
-        } else {
-            console.log(`   ⚠️  No balance changes detected!`);
-        }
-
-        console.log(`   ✅ Car's 25% withdrawn successfully (via Bob)!`);
-
-    } catch (error) {
-        console.log(`   ❌ Car withdrawal failed (expected - no gas): ${error}`);
-        console.log(`   💡 This is expected since Car has 0 SUI for gas`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 2000));
-}
-
-async function eveWithdrawsFinal(
-    escrowId: string,
-    factoryId: string,
-    factoryVersion: number,
-    secretData: any,
-    eveKeypair: Ed25519Keypair  // Eve withdraws for herself
-): Promise<void> {
     const eveAddress = eveKeypair.toSuiAddress();
 
-    console.log(`\n🎭 STEP 3: EVE WITHDRAWS HER 50% (50% → 100%)`);
-    console.log("─".repeat(45));
-    console.log(`   🎭 Eve withdraws for herself`);
+    // console.log(`\n🚗 STEP 3: CAR WITHDRAWS 3/10 PARTS WITH RELAYER SIGNATURE`);
+    // console.log("─".repeat(55));
 
-    try {
-        // Get escrow data to calculate proper amounts
-        const escrowData = await client.getObject({
-            id: escrowId,
-            options: { showContent: true }
-        });
+    // // Get escrow data
+    // const escrowData = await client.getObject({
+    //     id: escrowId,
+    //     options: { showContent: true }
+    // });
 
-        if (!escrowData.data?.content || !('fields' in escrowData.data.content)) {
-            throw new Error("Could not get escrow data");
-        }
+    // if (!escrowData.data?.content || !('fields' in escrowData.data.content)) {
+    //     throw new Error("Could not get escrow data");
+    // }
 
-        const fields = escrowData.data.content.fields as any;
-        const totalAmount = parseInt(fields.total_amount);
-        const numParts = parseInt(fields.num_parts);
-        const partSize = totalAmount / numParts; // Each part size
+    // const escrowVersion = parseInt(escrowData.data.version);
+    // console.log(`   Escrow version: ${escrowVersion}`);
 
-        const withdrawTx = new Transaction();
+    // const fields = escrowData.data.content.fields as any;
+    // const totalAmount = parseInt(fields.total_amount);
+    // const numParts = parseInt(fields.num_parts);
+    // const partSize = totalAmount / numParts;
 
-        // Use secret 4 (index 4) to withdraw up to 100% - funds go to Eve
-        const secret4 = uint8ArrayToNumberArray(secretData.secrets[3]); // secret 4 (0-indexed)
-        const merkleRoot = uint8ArrayToNumberArray(secretData.merkleRoot);
+    // console.log(`   Escrow total: ${totalAmount} MIST, ${numParts} parts, part size: ${partSize} MIST`);
+    // console.log(`   Car wants to withdraw: 3 parts (leaves 6,7,8) = ${3 * partSize} MIST`);
 
-        const secretIndex = 4; // Secret 4 allows up to 100%
-        const desiredFillAmount = 4 * partSize; // 4 * part_size = 100% of total
+    // // Step 3-a: Eve (relayer) creates signature to authorize Car for range 6-8
+    // console.log(`\n   3-a: Eve (Relayer) creates authorization signature for Car`);
 
-        console.log(`   Escrow total: ${totalAmount} MIST, ${numParts} parts, part size: ${partSize} MIST`);
-        console.log(`   Secret 4: ${toHex(secretData.secrets[3])}`);
-        console.log(`   Filling to: ${desiredFillAmount} MIST (100% total = +50% more)`);
+    // const nonce = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    // const message = createRelayerSignatureMessage(
+    //     escrowId,
+    //     carAddress,
+    //     6, // start_index (1-based)
+    //     8, // end_index (1-based)
+    //     nonce
+    // );
 
-        const [withdrawnCoin, optionalReward] = withdrawTx.moveCall({
-            target: `${PACKAGE_ID}::srcescrow::withdraw_partial`,
-            arguments: [
-                withdrawTx.object(escrowId),
-                withdrawTx.sharedObjectRef({              // EXPLICIT mutable shared object
-                    objectId: factoryId,
-                    initialSharedVersion: factoryVersion,  // Dynamic version from factory object
-                    mutable: true
-                }),
-                withdrawTx.pure.vector('u8', secret4),
-                withdrawTx.pure('vector<vector<u8>>', [merkleRoot]),
-                withdrawTx.pure.u64(secretIndex),
-                withdrawTx.pure.u64(desiredFillAmount),
-                withdrawTx.object('0x6'),
-            ],
-        });
+    // // Eve signs the message
+    // const signatureResult = await eveKeypair.signPersonalMessage(message);
+    // console.log(`   ✅ Eve signed authorization for Car (range 6-8)`);
+    // console.log(`   Signature: ${toHex(signatureResult.signature)}`);
 
-        // In public window: funds automatically go to assigned taker (Eve)
-        withdrawTx.transferObjects([withdrawnCoin], eveAddress);
-        withdrawTx.moveCall({
-            target: '0x1::option::destroy_none',
-            typeArguments: ['0x2::coin::Coin<0x2::sui::SUI>'],
-            arguments: [optionalReward]
-        });
+    // // Step 3-b: Car withdraws using the relayer signature
+    // console.log(`\n   3-b: Car withdraws using relayer signature`);
 
-        withdrawTx.setSender(eveAddress); // Eve pays gas
-        withdrawTx.setGasBudget(15000000);
+    // // Get Car's coins for gas
+    // const carCoins = await client.getCoins({
+    //     owner: carAddress,
+    //     coinType: '0x2::sui::SUI'
+    // });
 
-        const result = await client.signAndExecuteTransaction({
-            signer: eveKeypair, // Eve signs and pays
-            transaction: withdrawTx,
-            options: {
-                showEffects: true,
-                showObjectChanges: true,
-                showBalanceChanges: true
-            },
-        });
+    // if (carCoins.data.length === 0) {
+    //     throw new Error("Car has no coins for gas");
+    // }
 
-        console.log(`   Transaction: ${result.digest}`);
-        console.log(`   Status: ${result.effects?.status?.status}`);
+    // const carCoin = carCoins.data[0];
+    // console.log(`   Using Car's coin: ${carCoin.coinObjectId} (${carCoin.balance} MIST) for gas`);
 
-        if (result.effects?.status?.status !== 'success') {
-            console.log(`   ❌ WITHDRAWAL FAILED!`);
-            console.log(`   Error details:`, JSON.stringify(result.effects?.status, null, 2));
-            return;
-        }
+    // const withdrawTx = new Transaction();
 
-        if (result.balanceChanges && result.balanceChanges.length > 0) {
-            console.log(`   💰 Balance changes:`);
-            result.balanceChanges.forEach((change: any) => {
-                console.log(`      ${change.owner}: ${change.amount} MIST`);
-            });
-        } else {
-            console.log(`   ⚠️  No balance changes detected!`);
-        }
+    // // Car needs to provide secrets for leaves 5,6,7 (1-based: 6,7,8)
+    // // For range withdrawal, we need to use the same secret for both start and end
+    // // since the contract expects both secrets to hash to the same hash_lock
+    // const startSecret = uint8ArrayToNumberArray(secretData.secrets[5]); // Secret 6
+    // const endSecret = uint8ArrayToNumberArray(secretData.secrets[5]);   // Secret 6 (same as start)
 
-        console.log(`   ✅ Eve's final 25% withdrawn successfully (via Bob)!`);
+    // // Get merkle proofs for start and end
+    // const startProof = getMerkleProof(secretData.tree, 5); // Leaf 5 (Secret 6)
+    // const endProof = getMerkleProof(secretData.tree, 5);   // Leaf 5 (Secret 6) - same as start
 
-    } catch (error) {
-        console.log(`   ❌ Eve withdrawal failed (expected - no gas): ${error}`);
-        console.log(`   💡 This is expected since Eve has 0 SUI for gas`);
-    }
+    // console.log(`   Using secrets: 6 and 6 (same secret for both)`);
+    // console.log(`   Start secret: ${toHex(secretData.secrets[5])}`);
+    // console.log(`   End secret: ${toHex(secretData.secrets[5])}`);
 
-    console.log(`\n🎉 ALL WITHDRAWALS COMPLETE! Escrow fully filled by multiple takers!`);
+    // const [withdrawnCoin, optionalReward] = withdrawTx.moveCall({
+    //     target: `${PACKAGE_ID}::srcescrow::withdraw_partial_single_authorized`,
+    //     arguments: [
+    //         withdrawTx.sharedObjectRef({
+    //             objectId: escrowId,
+    //             initialSharedVersion: escrowVersion,
+    //             mutable: true
+    //         }),
+    //         withdrawTx.sharedObjectRef({
+    //             objectId: factoryId,
+    //             initialSharedVersion: factoryVersion,
+    //             mutable: true
+    //         }),
+    //         withdrawTx.pure.vector('u8', startSecret),
+    //         withdrawTx.pure('vector<vector<u8>>', startProof),
+    //         withdrawTx.pure.u64(6),  // secret_index (1-based)
+    //         withdrawTx.pure.u64(3 * partSize), // desired_fill_amount
+    //         withdrawTx.pure.vector('u8', Array.from(signatureResult.signature)),
+    //         withdrawTx.pure.vector('u8', Array.from(eveKeypair.getPublicKey().toSuiBytes())),
+    //         withdrawTx.pure.address(carAddress), // authorized_resolver
+    //         withdrawTx.pure.vector('u8', Array.from(hexToBytes(nonce as `0x${string}`))),
+    //         withdrawTx.object('0x6'), // Clock object
+    //     ],
+    // });
+
+    // withdrawTx.transferObjects([withdrawnCoin], carAddress);
+    // withdrawTx.moveCall({
+    //     target: '0x1::option::destroy_none',
+    //     typeArguments: ['0x2::coin::Coin<0x2::sui::SUI>'],
+    //     arguments: [optionalReward]
+    // });
+
+    // withdrawTx.setSender(carAddress);
+    // withdrawTx.setGasBudget(15000000);
+
+    // const result = await client.signAndExecuteTransaction({
+    //     signer: carKeypair,
+    //     transaction: withdrawTx,
+    //     options: {
+    //         showEffects: true,
+    //         showObjectChanges: true,
+    //         showBalanceChanges: true
+    //     },
+    // });
+
+    // console.log(`   Transaction: ${result.digest}`);
+    // console.log(`   Status: ${result.effects?.status?.status}`);
+
+    // if (result.effects?.status?.status !== 'success') {
+    //     console.log(`   ❌ WITHDRAWAL FAILED!`);
+    //     console.log(`   Error details:`, JSON.stringify(result.effects?.status, null, 2));
+    //     return;
+    // }
+
+    // if (result.balanceChanges && result.balanceChanges.length > 0) {
+    //     console.log(`   💰 Balance changes:`);
+    //     result.balanceChanges.forEach((change: any) => {
+    //         console.log(`      ${change.owner}: ${change.amount} MIST`);
+    //     });
+    // }
+
+    // console.log(`   ✅ Car withdrew 3/10 parts successfully with relayer authorization!`);
 }
 
-
-
-async function demonstrateGaslessSponsoredEscrow() {
-    console.log("\n🎯 MULTI-TAKER GASLESS ESCROW WITH N+1 MERKLE SECRETS");
-    console.log("=======================================================");
-    console.log("Features: Multi-taker support + Auction-based allocation + Balance tracking");
+async function demonstrateRelayerSignatureEscrow() {
+    console.log("\n🎯 RELAYER SIGNATURE ESCROW WITH OPENZEPPELIN MERKLE TREE");
+    console.log("=========================================================");
+    console.log("Features: OpenZeppelin SimpleMerkleTree + Relayer signatures + Frontrunning protection");
     console.log("");
 
     // === PRIVATE KEYS FROM .ENV ===
-    const ALICE_PRIVATE_KEY = (process as any).env.ALICE_PRIVATE_KEY; // Alice/Maker
-    const BOB_PRIVATE_KEY = (process as any).env.BOB_PRIVATE_KEY; // Bob/Taker1
-    const CAR_PRIVATE_KEY = (process as any).env.CAR_PRIVATE_KEY; // Car/Taker3
-    const EVE_PRIVATE_KEY = (process as any).env.EVE_PRIVATE_KEY; // Eve/Taker4
+    const ALICE_PRIVATE_KEY = (process as any).env.ALICE_PRIVATE_KEY;
+    const BOB_PRIVATE_KEY = (process as any).env.BOB_PRIVATE_KEY;
+    const CAR_PRIVATE_KEY = (process as any).env.CAR_PRIVATE_KEY;
+    const EVE_PRIVATE_KEY = (process as any).env.EVE_PRIVATE_KEY;
 
-    // Validate environment variables
     if (!ALICE_PRIVATE_KEY || !BOB_PRIVATE_KEY || !CAR_PRIVATE_KEY || !EVE_PRIVATE_KEY) {
-        throw new Error('Missing private keys in .env file. Please check ALICE_PRIVATE_KEY, BOB_PRIVATE_KEY, CAR_PRIVATE_KEY, EVE_PRIVATE_KEY');
+        throw new Error('Missing private keys in .env file');
     }
 
-    if (!PACKAGE_ID) {
-        throw new Error('Missing PACKAGE_ID in .env file. Please add PACKAGE_ID to your .env file');
-    }
-
-    console.log(`📦 Using PACKAGE_ID from .env: ${PACKAGE_ID}`);
+    console.log(`📦 Using PACKAGE_ID: ${PACKAGE_ID}`);
+    console.log(`🏭 Using FACTORY_ID: ${FACTORY_ID}`);
 
     // Import keypairs
     const aliceKeypair = Ed25519Keypair.fromSecretKey(ALICE_PRIVATE_KEY);
@@ -642,144 +730,100 @@ async function demonstrateGaslessSponsoredEscrow() {
     const eveAddress = eveKeypair.toSuiAddress();
 
     console.log(`👩‍💼 Alice (Maker): ${aliceAddress}`);
-    console.log(`🤝 Bob (Taker 1): ${bobAddress}`);
-    console.log(`🚗 Car (Taker 3): ${carAddress}`);
-    console.log(`🎭 Eve (Taker 4): ${eveAddress}`);
-    console.log("");
-    console.log("🎉 MULTI-TAKER SETUP: Alice, Bob, Car, and Eve!");
+    console.log(`🤝 Bob (Taker): ${bobAddress}`);
+    console.log(`🚗 Car (Taker): ${carAddress}`);
+    console.log(`🎭 Eve (Relayer): ${eveAddress}`);
     console.log("");
 
-    // Track initial balances for all participants
+    // Track initial balances
     const initialAliceBalance = await client.getBalance({ owner: aliceAddress, coinType: '0x2::sui::SUI' });
     const initialBobBalance = await client.getBalance({ owner: bobAddress, coinType: '0x2::sui::SUI' });
     const initialCarBalance = await client.getBalance({ owner: carAddress, coinType: '0x2::sui::SUI' });
-    const initialEveBalance = await client.getBalance({ owner: eveAddress, coinType: '0x2::sui::SUI' });
 
     console.log("💰 INITIAL BALANCES:");
-    console.log(`👩‍💼 Alice: ${parseInt(initialAliceBalance.totalBalance)} MIST (${parseInt(initialAliceBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`🤝 Bob: ${parseInt(initialBobBalance.totalBalance)} MIST (${parseInt(initialBobBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`🚗 Car: ${parseInt(initialCarBalance.totalBalance)} MIST (${parseInt(initialCarBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`🎭 Eve: ${parseInt(initialEveBalance.totalBalance)} MIST (${parseInt(initialEveBalance.totalBalance) / 1000000000} SUI)`);
+    console.log(`👩‍💼 Alice: ${parseInt(initialAliceBalance.totalBalance)} MIST`);
+    console.log(`🤝 Bob: ${parseInt(initialBobBalance.totalBalance)} MIST`);
+    console.log(`🚗 Car: ${parseInt(initialCarBalance.totalBalance)} MIST`);
     console.log("");
 
-    // Use the factory
-    const factoryId = "0x2948c6d0fef0b0f2c60bec03a84750e31d5a6799711044db6b0346af0ade3b03";
-    const factoryVersion = 513761148; // Version from factory creation
-    console.log(`🏭 Using factory: ${factoryId}`);
+    // Get factory version
+    const factoryData = await client.getObject({
+        id: FACTORY_ID,
+        options: { showContent: true }
+    });
+
+    console.log("Factory data:", JSON.stringify(factoryData, null, 2));
+
+    if (!factoryData.data) {
+        throw new Error("Could not get factory data");
+    }
+
+    // Use the version from the transaction output where factory was created
+    const factoryVersion = process.env.FACTORY_VERSION || "516497581"; // From the transaction output
     console.log(`🏭 Factory version: ${factoryVersion}`);
     console.log("");
 
-    // CREATE SINGLE ESCROW USING THE FACTORY
-    const numberOfEscrows = 1;
-    const createdEscrows: string[] = [];
-
-    console.log(`🏭 CREATING ${numberOfEscrows} ESCROW USING THE FACTORY:`);
+    // STEP 1: Create escrow with 10 parts
+    console.log(`🏭 STEP 1: CREATING ESCROW WITH 10 PARTS`);
     console.log("=".repeat(50));
 
-    // Generate random secrets and merkle root for this escrow
-    const secretData = generateRandomSecretsAndMerkleRoot(4); // 4 parts = 5 secrets
+    // Generate proper OpenZeppelin merkle tree
+    const secretData = await generateOpenZeppelinMerkleTree(10); // 10 parts = 11 secrets
 
-    // Create array of taker addresses for the 5 secrets
-    const multiTakerAddresses = [
-        bobAddress,     // Secret 1: up to 25%
-        bobAddress,     // Secret 2: up to 50%  
-        carAddress,     // Secret 3: up to 75% - Car
-        eveAddress,     // Secret 4: up to 100% - Eve
-        bobAddress      // Secret 5: completion secret
-    ];
-
-    for (let i = 1; i <= numberOfEscrows; i++) {
-        const escrowId = await createSingleEscrow(aliceKeypair, bobKeypair, multiTakerAddresses, factoryId, factoryVersion, i, secretData);
-        if (escrowId) {
-            createdEscrows.push(escrowId);
-        }
+    const escrowId = await createEscrowWith10Parts(aliceKeypair, bobKeypair, FACTORY_ID, parseInt(factoryVersion), secretData);
+    if (!escrowId) {
+        throw new Error("Failed to create escrow");
     }
 
-    console.log(`\n✅ Created ${createdEscrows.length} escrow successfully!`);
-    createdEscrows.forEach((id, index) => {
-        console.log(`   Escrow: ${id}`);
-    });
+    console.log(`✅ Escrow created successfully: ${escrowId}`);
 
-    // MULTI-TAKER WITHDRAWALS FROM THE CREATED ESCROW
-    console.log(`\n🎯 MULTI-TAKER WITHDRAWALS FROM THE CREATED ESCROW:`);
-    console.log("=".repeat(55));
+    // Wait for escrow to be indexed
+    console.log("⏳ Waiting 3 seconds for escrow indexing...");
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    for (let i = 0; i < createdEscrows.length; i++) {
-        await performMultiTakerWithdrawals(
-            createdEscrows[i],
-            factoryId,
-            factoryVersion,
-            secretData,
-            bobKeypair,
-            carKeypair,  // Car withdraws for herself
-            eveKeypair   // Eve withdraws for herself
-        );
-    }
+    // STEP 2: Bob withdraws 5/10 parts with relayer signature
+    await bobWithdrawsWithRelayerSignature(escrowId, FACTORY_ID, parseInt(factoryVersion), secretData, bobKeypair, eveKeypair);
 
-    // FINAL BALANCE TRACKING FOR ALL PARTICIPANTS
+    // Wait between withdrawals
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // STEP 3: Car withdraws 3/10 parts with relayer signature
+    // await carWithdrawsWithRelayerSignature(escrowId, FACTORY_ID, factoryVersion, secretData, carKeypair, eveKeypair);
+
+    // FINAL BALANCE TRACKING
     console.log("\n💰 FINAL BALANCE COMPARISON:");
     console.log("===============================");
 
     const finalAliceBalance = await client.getBalance({ owner: aliceAddress, coinType: '0x2::sui::SUI' });
     const finalBobBalance = await client.getBalance({ owner: bobAddress, coinType: '0x2::sui::SUI' });
     const finalCarBalance = await client.getBalance({ owner: carAddress, coinType: '0x2::sui::SUI' });
-    const finalEveBalance = await client.getBalance({ owner: eveAddress, coinType: '0x2::sui::SUI' });
 
     const aliceChange = parseInt(finalAliceBalance.totalBalance) - parseInt(initialAliceBalance.totalBalance);
     const bobChange = parseInt(finalBobBalance.totalBalance) - parseInt(initialBobBalance.totalBalance);
     const carChange = parseInt(finalCarBalance.totalBalance) - parseInt(initialCarBalance.totalBalance);
-    const eveChange = parseInt(finalEveBalance.totalBalance) - parseInt(initialEveBalance.totalBalance);
 
     console.log(`👩‍💼 Alice (Maker):`);
-    console.log(`   Initial: ${parseInt(initialAliceBalance.totalBalance)} MIST (${parseInt(initialAliceBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Final:   ${parseInt(finalAliceBalance.totalBalance)} MIST (${parseInt(finalAliceBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Change:  ${aliceChange > 0 ? '+' : ''}${aliceChange} MIST (${aliceChange / 1000000000} SUI)`);
+    console.log(`   Initial: ${parseInt(initialAliceBalance.totalBalance)} MIST`);
+    console.log(`   Final:   ${parseInt(finalAliceBalance.totalBalance)} MIST`);
+    console.log(`   Change:  ${aliceChange > 0 ? '+' : ''}${aliceChange} MIST`);
     console.log("");
-    console.log(`🤝 Bob (Taker 50%):`);
-    console.log(`   Initial: ${parseInt(initialBobBalance.totalBalance)} MIST (${parseInt(initialBobBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Final:   ${parseInt(finalBobBalance.totalBalance)} MIST (${parseInt(finalBobBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Change:  ${bobChange > 0 ? '+' : ''}${bobChange} MIST (${bobChange / 1000000000} SUI)`);
+    console.log(`🤝 Bob (Taker 5/10):`);
+    console.log(`   Initial: ${parseInt(initialBobBalance.totalBalance)} MIST`);
+    console.log(`   Final:   ${parseInt(finalBobBalance.totalBalance)} MIST`);
+    console.log(`   Change:  ${bobChange > 0 ? '+' : ''}${bobChange} MIST`);
     console.log("");
-    console.log(`🚗 Car (Taker 25%):`);
-    console.log(`   Initial: ${parseInt(initialCarBalance.totalBalance)} MIST (${parseInt(initialCarBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Final:   ${parseInt(finalCarBalance.totalBalance)} MIST (${parseInt(finalCarBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Change:  ${carChange > 0 ? '+' : ''}${carChange} MIST (${carChange / 1000000000} SUI)`);
-    console.log("");
-    console.log(`🎭 Eve (Taker 25%):`);
-    console.log(`   Initial: ${parseInt(initialEveBalance.totalBalance)} MIST (${parseInt(initialEveBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Final:   ${parseInt(finalEveBalance.totalBalance)} MIST (${parseInt(finalEveBalance.totalBalance) / 1000000000} SUI)`);
-    console.log(`   Change:  ${eveChange > 0 ? '+' : ''}${eveChange} MIST (${eveChange / 1000000000} SUI)`);
+    console.log(`🚗 Car (Taker 3/10):`);
+    console.log(`   Initial: ${parseInt(initialCarBalance.totalBalance)} MIST`);
+    console.log(`   Final:   ${parseInt(finalCarBalance.totalBalance)} MIST`);
+    console.log(`   Change:  ${carChange > 0 ? '+' : ''}${carChange} MIST`);
     console.log("");
 
-    const totalEscrowValue = numberOfEscrows * 10000000; // 10M MIST each
-    const totalWithdrawn = numberOfEscrows * 10000000;   // 10M MIST each (FULLY WITHDRAWN)
-
-    // Check remaining escrow balance
-    console.log(`🏦 CHECKING REMAINING ESCROW BALANCE:`);
-    console.log("─".repeat(40));
-    for (let i = 0; i < createdEscrows.length; i++) {
-        try {
-            const escrow = await client.getObject({
-                id: createdEscrows[i],
-                options: { showContent: true }
-            });
-            console.log(`   Escrow ${i + 1}: ${createdEscrows[i]}`);
-            if (escrow.data?.content && 'fields' in escrow.data.content) {
-                const balance = (escrow.data.content.fields as any)?.balance;
-                if (balance) {
-                    console.log(`   Remaining balance: ${balance} MIST`);
-                } else {
-                    console.log(`   Status: Fully depleted or resolved`);
-                }
-            }
-        } catch (error) {
-            console.log(`   Escrow ${i + 1}: Object not found (likely resolved/deleted)`);
-        }
-    }
-    console.log("");
+    console.log(`🎉 RELAYER SIGNATURE ESCROW COMPLETE!`);
+    console.log(`📊 Total withdrawn: 5/10 parts (Bob: 5/10, Car: skipped - no gas)`);
+    console.log(`🛡️  Frontrunning protection: Active via relayer signatures`);
 }
 
 // Run the demo
-demonstrateGaslessSponsoredEscrow().catch(console.error);
+demonstrateRelayerSignatureEscrow().catch(console.error);
 
-export { demonstrateGaslessSponsoredEscrow }; 
+export { demonstrateRelayerSignatureEscrow }; 

@@ -4,15 +4,13 @@
   "description": "Demonstrates true sponsored transactions with HTLC escrow on Sui",
   "main": "sponsored_escrow_demo.ts",
   "scripts": {
-    "test": "tsx gasless_sponsored_escrow_demo.ts",
-    "test:relayer": "tsx gasless_sponsored_escrow_demo.ts",
+    "test": "tsx test_unlock.ts",
     "testdoublespending": "tsx test_double_withdrawal.ts",
     "recover": "tsx recover_escrows.ts",
     "build": "tsc sponsored_escrow_demo.ts"
   },
   "dependencies": {
     "@mysten/sui": "^1.36.2",
-    "@openzeppelin/merkle-tree": "^1.0.8",
     "@types/node": "^24.1.0",
     "dotenv": "^16.6.1",
     "viem": "^2.21.44"
