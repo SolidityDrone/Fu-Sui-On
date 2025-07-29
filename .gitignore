@@ -51,4 +51,8 @@ temp/
 
 # Sui specific
 .sui/
-sui.keystore 
+sui.keystore
+
+# Cross-chain swap lib folder contents (keep folder, ignore contents)
+cross-chain-swap/lib/*
+!cross-chain-swap/lib/.gitkeep 
