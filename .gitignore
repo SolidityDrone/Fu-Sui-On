@@ -4,6 +4,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+cross-chain-swap/
 # Environment variables
 .env
 .env.local
@@ -51,8 +52,12 @@ temp/
 
 # Sui specific
 .sui/
-sui.keystore
+sui.keystore 
 
 # Cross-chain swap lib folder contents (keep folder, ignore contents)
-cross-chain-swap/lib/*
+cross-chain-swap/
 !cross-chain-swap/lib/.gitkeep 
+
+integration/.env    
+
+cross-chain-sdk/

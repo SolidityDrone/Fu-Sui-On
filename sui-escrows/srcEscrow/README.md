@@ -1,15 +1,16 @@
-# Sui Cross-Chain Escrow with OpenZeppelin Merkle Trees
+# Sui Source Escrow with Gasless Transactions
 
-A sophisticated cross-chain escrow system for Sui that enables **partial fills** using **OpenZeppelin-compatible Merkle trees** with nullifiers. This system supports atomic cross-chain swaps with multiple fillers working simultaneously.
+A sophisticated source chain escrow system for Sui that enables **gasless partial fills** using **OpenZeppelin-compatible Merkle trees** with relayer signatures. This system allows takers to withdraw funds without paying gas fees through sponsored transactions.
 
 ## 🎯 What This Does
 
-This escrow system enables **cross-chain atomic swaps** where:
+This source escrow system enables **gasless cross-chain atomic swaps** where:
 
 1. **Alice** (maker) locks funds on Sui with a Merkle root
-2. **Bob** (taker) deposits corresponding funds on destination chain
-3. **Multiple fillers** can partially fill the order using different Merkle tree leaves
-4. **Secrets are shared** to unlock funds atomically across chains
+2. **Bob** (taker) can withdraw funds without paying gas fees
+3. **Relayer** sponsors transactions and provides signatures
+4. **Multiple fillers** can partially fill using different Merkle tree leaves
+5. **Secrets are shared** to unlock funds atomically
 
 The system uses **OpenZeppelin's Merkle tree implementation** for compatibility with Solidity contracts, ensuring the same Merkle proofs work on both Sui and Ethereum.
 
@@ -19,13 +20,19 @@ The system uses **OpenZeppelin's Merkle tree implementation** for compatibility 
 ```
 Root = OpenZeppelin SimpleMerkleTree.of([secret1, secret2, secret3, secret4, secret5])
 
-Leaves (N+1 system):
-- secret1 = 20% of order (parts 1-2)
-- secret2 = 20% of order (parts 3-4)  
-- secret3 = 20% of order (parts 5-6)
-- secret4 = 20% of order (parts 7-8)
-- secret5 = 20% of order (parts 9-10) + completion secret
+Leaves (10 parts system):
+- secret1 = Parts 1-2 (20% of order)
+- secret2 = Parts 3-4 (20% of order)  
+- secret3 = Parts 5-6 (20% of order)
+- secret4 = Parts 7-8 (20% of order)
+- secret5 = Parts 9-10 (20% of order) + completion secret
 ```
+
+### Gasless Transaction System
+- **Relayer Sponsorship**: Relayer pays gas fees for taker transactions
+- **Signature Verification**: Relayer signs withdrawal requests
+- **Sponsored Transactions**: Takers execute without gas costs
+- **Authorization**: Only relayer can authorize withdrawals
 
 ### Time Windows
 - **SRC_WITHDRAWAL**: Only maker can withdraw (with secrets)
@@ -35,15 +42,15 @@ Leaves (N+1 system):
 ### Security Features
 - **OpenZeppelin Merkle Proofs**: Cryptographic verification
 - **Nullifier System**: Prevents double-spending
+- **Relayer Authorization**: Only authorized relayer can sign withdrawals
 - **Time-based Access Control**: Different permissions per window
-- **Deposit System**: Takers must deposit before withdrawal
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Sui CLI installed
 - Node.js and npm
-- Testnet SUI for gas fees
+- Testnet SUI for gas fees (for relayer)
 
 ### 1. Setup Environment
 ```bash
@@ -142,7 +149,7 @@ sui client object 0xYOUR_FACTORY_ID --show-content
 ```
 Look for `"version": "123"` in the output.
 
-## 🔄 Cross-Chain Flow
+## 🔄 Gasless Transaction Flow
 
 ### 1. Alice Creates Escrow (Sui)
 ```typescript
@@ -155,41 +162,34 @@ const escrow = await createEscrow(
 );
 ```
 
-### 2. Bob Deposits on Destination Chain
+### 2. Relayer Generates Signature
 ```typescript
-// Bob deposits corresponding funds
-await depositForPartRange(
+// Relayer signs withdrawal request for Bob
+const relayerSignature = await generateRelayerSignature(
     escrowId,
-    factoryId,
-    factoryVersion,
-    bobKeypair,
-    1, 5 // Parts 1-5
+    secrets,
+    merkleProofs,
+    relayerKeypair
 );
 ```
 
-### 3. Relayer Shares Secrets
+### 3. Bob Withdraws Gaslessly
 ```typescript
-// Relayer provides secrets to unlock funds
+// Bob withdraws without paying gas (relayer sponsors)
 await withdrawWithRelayerSignature(
     escrowId,
     secrets,
     merkleProofs,
-    relayerSignature
+    relayerSignature,
+    bobKeypair // Bob doesn't need SUI for gas
 );
 ```
 
-### 4. Bob Withdraws on Destination
+### 4. Relayer Pays Gas, Bob Gets Funds
 ```typescript
-// Bob withdraws using secrets
-await withdrawPartialRange(
-    escrowId,
-    startSecret,
-    endSecret,
-    startProof,
-    endProof,
-    1, 5, // Parts 1-5
-    500000 // 50% of escrow
-);
+// Relayer pays gas fees
+// Bob receives funds directly
+// Transaction is sponsored by relayer
 ```
 
 ## 🧪 Testing
@@ -202,20 +202,21 @@ npm run test
 
 ### Test Output
 ```
-🎯 SOURCE ESCROW WITH RELAYER SIGNATURE
-========================================
+🎯 SOURCE ESCROW WITH GASLESS TRANSACTIONS
+==========================================
 ✅ Escrow created: 0x1234...
 ✅ Relayer signature generated
-✅ Bob withdraws 5/10 parts successfully
+✅ Bob withdraws 5/10 parts gaslessly
 ✅ Funds transferred to beneficiary
+✅ Relayer paid gas fees
 ```
 
 ### Manual Testing
 ```bash
 # Test specific functions
-npm run test:withdrawal
-npm run test:deposit
-npm run test:refund
+npm run test:gasless-withdrawal
+npm run test:relayer-signature
+npm run test:escrow-creation
 ```
 
 ## 🔐 Security Features
@@ -224,6 +225,11 @@ npm run test:refund
 - **OpenZeppelin Compatible**: Same proofs work on Sui and Ethereum
 - **Cryptographic Security**: Prevents invalid withdrawals
 - **Efficient**: O(log n) proof size
+
+### Gasless Transaction Security
+- **Relayer Authorization**: Only authorized relayer can sign withdrawals
+- **Signature Verification**: Cryptographic proof of relayer approval
+- **Sponsored Safety**: Relayer controls gas payment and transaction execution
 
 ### Nullifier System
 - **Double-Spend Prevention**: Each secret can only be used once
@@ -245,7 +251,7 @@ npm run test:refund
 - `EWINDOW_EXPIRED` (11): Time window expired
 - `EINVALID_SECRET_INDEX` (12): Invalid secret index
 - `EINVALID_AMOUNT` (13): Invalid amount
-- `EINVALID_DEPOSITOR` (18): Invalid depositor
+- `EINVALID_RELAYER_SIGNATURE` (14): Invalid relayer signature
 
 ## 🔗 Integration Examples
 
@@ -259,33 +265,54 @@ const escrow = await createEscrow({
     deadline: Date.now() + 3600000
 });
 
-// Withdraw partial
-const withdrawal = await withdrawPartial({
+// Generate relayer signature
+const signature = await generateRelayerSignature({
     escrowId: escrow.id,
-    startSecret: secrets[0],
-    endSecret: secrets[4],
-    startProof: proofs[0],
-    endProof: proofs[4],
-    startIndex: 1,
-    endIndex: 5,
-    amount: "500000000"
+    secrets: [secret1, secret2, secret3, secret4, secret5],
+    merkleProofs: [proof1, proof2, proof3, proof4, proof5],
+    relayerKeypair
+});
+
+// Gasless withdrawal
+const withdrawal = await withdrawWithRelayerSignature({
+    escrowId: escrow.id,
+    secrets: [secret1, secret2, secret3, secret4, secret5],
+    merkleProofs: [proof1, proof2, proof3, proof4, proof5],
+    relayerSignature: signature,
+    takerKeypair // No gas required
 });
 ```
 
-### Solidity Compatibility
-```solidity
-// Same Merkle proofs work on Ethereum
-bool isValid = MerkleProof.verify(
-    merkleRoot,
-    leaf,
-    proof
-);
+### Relayer Service Integration
+```typescript
+// Relayer service endpoint
+app.post('/withdraw', async (req, res) => {
+    const { escrowId, secrets, merkleProofs } = req.body;
+    
+    // Generate signature
+    const signature = await generateRelayerSignature(
+        escrowId,
+        secrets,
+        merkleProofs,
+        relayerKeypair
+    );
+    
+    // Execute sponsored transaction
+    const tx = await executeSponsoredWithdrawal(
+        escrowId,
+        secrets,
+        merkleProofs,
+        signature
+    );
+    
+    res.json({ success: true, txHash: tx.digest });
+});
 ```
 
 ## 🏗️ Architecture Benefits
 
-- **Cross-Chain Atomic**: Works across Sui and Ethereum
-- **Partial Fills**: Multiple fillers can work simultaneously
+- **Gasless Transactions**: Takers don't need SUI for gas fees
+- **Relayer Sponsorship**: Professional relayers handle gas costs
 - **OpenZeppelin Compatible**: Same Merkle implementation
 - **Time-Based Security**: Flexible access control
 - **Gas Efficient**: Optimized for Sui's gas model
@@ -295,8 +322,19 @@ bool isValid = MerkleProof.verify(
 
 - **Merkle Proof**: ~200 gas per verification
 - **Nullifier Check**: ~50 gas per check
-- **Withdrawal**: ~1000 gas per operation
+- **Relayer Signature**: ~100 gas per signature
+- **Gasless Withdrawal**: ~1500 gas (paid by relayer)
 - **Escrow Creation**: ~5000 gas
+
+## 🔄 Gasless Transaction Benefits
+
+| Feature | Traditional | Gasless |
+|---------|-------------|---------|
+| **Gas Payment** | Taker pays gas | Relayer pays gas |
+| **User Experience** | Requires SUI balance | No SUI required |
+| **Transaction Speed** | Depends on user | Relayer optimizes |
+| **Cost** | User bears gas cost | Relayer absorbs cost |
+| **Accessibility** | Requires SUI | Anyone can participate |
 
 ## 🤝 Contributing
 

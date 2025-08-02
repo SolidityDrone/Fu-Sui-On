@@ -434,21 +434,21 @@ public fun withdraw_partial_single(
     
     // Transfer funds to the beneficiary (maker from srcEscrow)
     sui::transfer::public_transfer(coin, escrow.beneficiary_address);
-    
+        
     // Handle deposit fee reward
-    let deposit_reward = if (balance::value(&escrow.deposit_fee) > 0) {
-        let fee_amount = balance::value(&escrow.deposit_fee);
-        let fee_balance = balance::split(&mut escrow.deposit_fee, fee_amount);
-        let reward_coin = coin::from_balance(fee_balance, ctx);
+        let deposit_reward = if (balance::value(&escrow.deposit_fee) > 0) {
+            let fee_amount = balance::value(&escrow.deposit_fee);
+            let fee_balance = balance::split(&mut escrow.deposit_fee, fee_amount);
+            let reward_coin = coin::from_balance(fee_balance, ctx);
         sui::transfer::public_transfer(reward_coin, escrow.beneficiary_address);
-        option::none() // Already transferred
-    } else {
-        option::none()
-    };
-    
-    // Return zero coin since we transferred the real coin
-    let zero_coin = coin::zero<SUI>(ctx);
-    (zero_coin, deposit_reward)
+            option::none() // Already transferred
+        } else {
+            option::none()
+        };
+        
+        // Return zero coin since we transferred the real coin
+        let zero_coin = coin::zero<SUI>(ctx);
+        (zero_coin, deposit_reward)
 }
 
 /// Withdraw partial amount with range of secrets (respects time windows and part deposits)
@@ -568,8 +568,8 @@ public fun withdraw_partial_range(
     };
     
     // Return zero coin since we transferred the real coin
-    let zero_coin = coin::zero<SUI>(ctx);
-    (zero_coin, deposit_reward)
+        let zero_coin = coin::zero<SUI>(ctx);
+        (zero_coin, deposit_reward)
 }
 
 /// Withdraw full remaining amount with completion secret (completes the escrow)
@@ -638,20 +638,20 @@ public fun withdraw_full(
     
     // Transfer all funds to the beneficiary (maker from srcEscrow)
     sui::transfer::public_transfer(main_coin, beneficiary_address);
-    
+        
     // Transfer deposit fee to beneficiary as well
-    if (balance::value(&deposit_fee) > 0) {
-        let reward_coin = coin::from_balance(deposit_fee, ctx);
+        if (balance::value(&deposit_fee) > 0) {
+            let reward_coin = coin::from_balance(deposit_fee, ctx);
         sui::transfer::public_transfer(reward_coin, beneficiary_address);
-    } else {
-        balance::destroy_zero(deposit_fee);
-    };
-    
-    object::delete(id);
-    
-    // Return zero coins since we transferred the real coins
-    let zero_main = coin::zero<SUI>(ctx);
-    (zero_main, option::none())
+        } else {
+            balance::destroy_zero(deposit_fee);
+        };
+        
+        object::delete(id);
+        
+        // Return zero coins since we transferred the real coins
+        let zero_main = coin::zero<SUI>(ctx);
+        (zero_main, option::none())
 }
 
 /// Anyone can refund to depositors in DstCancellation window  

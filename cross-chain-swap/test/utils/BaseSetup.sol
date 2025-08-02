@@ -125,7 +125,7 @@ contract BaseSetup is Test, Utils {
 
         if (isZkSync) {
             escrowFactory = new EscrowFactoryZkSync(
-                address(limitOrderProtocol), inch, accessToken, charlie.addr,  RESCUE_DELAY, RESCUE_DELAY
+                address(limitOrderProtocol), accessToken, charlie.addr, RESCUE_DELAY, RESCUE_DELAY
             );
         } else {
             escrowFactory = new EscrowFactory(address(limitOrderProtocol), inch, accessToken, charlie.addr, RESCUE_DELAY, RESCUE_DELAY);

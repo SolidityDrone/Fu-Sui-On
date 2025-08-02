@@ -1,0 +1,32 @@
+{
+    "name": "sui-evm-relayer",
+    "version": "1.0.0",
+    "description": "WebSocket relayer for Sui ↔ EVM cross-chain bridge",
+    "main": "websocket-relayer.ts",
+    "scripts": {
+        "start": "ts-node websocket-relayer.ts",
+        "client": "ts-node websocket-client.ts",
+        "build": "tsc",
+        "dev": "ts-node-dev --respawn websocket-relayer.ts"
+    },
+    "dependencies": {
+        "ws": "^8.14.2",
+        "@types/ws": "^8.5.10",
+        "ts-node": "^10.9.1",
+        "typescript": "^5.0.0"
+    },
+    "devDependencies": {
+        "ts-node-dev": "^2.0.0",
+        "@types/node": "^20.0.0"
+    },
+    "keywords": [
+        "sui",
+        "evm",
+        "cross-chain",
+        "bridge",
+        "websocket",
+        "relayer"
+    ],
+    "author": "Your Name",
+    "license": "MIT"
+}

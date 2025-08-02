@@ -28,7 +28,6 @@ async function generateOpenZeppelinMerkleTree(numParts: number): Promise<{
 
     // Generate N+1 random secrets (32 bytes each)
     const secrets: Uint8Array[] = [];
-    const leafHashes: Uint8Array[] = [];
 
     // Add timestamp to ensure unique secrets for each escrow instance
     const timestamp = Date.now();
@@ -47,25 +46,20 @@ async function generateOpenZeppelinMerkleTree(numParts: number): Promise<{
         secret.set(timestampBytes, 28);
 
         secrets.push(secret);
-
-        // Calculate keccak256 hash of the secret (this is the leaf hash for reference)
-        const hash = keccak256(secret);
-        const hashBytes = hexToBytes(hash);
-        leafHashes.push(hashBytes);
     }
 
-    // Use OpenZeppelin SimpleMerkleTree with unsorted leaves
-    // Convert secrets to hex strings for SimpleMerkleTree
-    const leafHexStrings = secrets.map(secret => toHex(secret));
+    // FIXED: Hash secrets first to create secure leaves
+    // Convert secrets to hashed leaves for SimpleMerkleTree
+    const leafHashes = secrets.map(secret => keccak256(secret));
 
     // Build tree with SimpleMerkleTree - CRITICAL: sortLeaves: false to preserve order
-    const ozTree = SimpleMerkleTree.of(leafHexStrings, { sortLeaves: false });
+    const ozTree = SimpleMerkleTree.of(leafHashes, { sortLeaves: false });
 
     // Get root and generate proofs
     const root = hexToBytes(ozTree.root as `0x${string}`);
     const proofs: string[][] = [];
 
-    for (let i = 0; i < leafHexStrings.length; i++) {
+    for (let i = 0; i < leafHashes.length; i++) {
         const proof = ozTree.getProof(i);
         proofs.push(proof);
     }
@@ -74,9 +68,8 @@ async function generateOpenZeppelinMerkleTree(numParts: number): Promise<{
 
     // DEBUG: Let's understand what OpenZeppelin is doing
     console.log(`🔍 DEBUG: OpenZeppelin tree analysis:`);
-    console.log(`   Number of leaves: ${leafHexStrings.length}`);
-    console.log(`   First leaf: ${leafHexStrings[0]}`);
-    console.log(`   First leaf hash: ${keccak256(leafHexStrings[0] as `0x${string}`)}`);
+    console.log(`   Number of leaves: ${leafHashes.length}`);
+    console.log(`   First leaf: ${leafHashes[0]}`);
     console.log(`   Tree root: ${ozTree.root}`);
 
     // Let's manually verify the first proof to see what's happening
@@ -87,47 +80,33 @@ async function generateOpenZeppelinMerkleTree(numParts: number): Promise<{
 
     // Let's test with a simple 2-leaf tree to understand OpenZeppelin's algorithm
     console.log(`🔍 DEBUG: Testing simple 2-leaf tree:`);
-    const simpleLeaves = [leafHexStrings[0], leafHexStrings[1]];
+    const simpleLeaves = [leafHashes[0], leafHashes[1]];
     const simpleTree = SimpleMerkleTree.of(simpleLeaves, { sortLeaves: false });
     console.log(`   Simple tree root: ${simpleTree.root}`);
     console.log(`   Simple tree proof for leaf 0: ${JSON.stringify(simpleTree.getProof(0))}`);
 
-    // Manual verification of simple tree
-    const leaf0Hash = hexToBytes(keccak256(simpleLeaves[0] as `0x${string}`));
-    const leaf1Hash = hexToBytes(keccak256(simpleLeaves[1] as `0x${string}`));
-    const manualRoot = hexToBytes(keccak256(new Uint8Array([...leaf0Hash, ...leaf1Hash])));
-    console.log(`   Manual root: ${toHex(manualRoot)}`);
-    console.log(`   Roots match: ${toHex(manualRoot) === simpleTree.root}`);
+    // Test OpenZeppelin's verification directly
+    console.log(`🔍 DEBUG: Testing OpenZeppelin verification:`);
+    const testVerification = SimpleMerkleTree.verify(
+        simpleTree.root as `0x${string}`,
+        simpleLeaves[0] as `0x${string}`,
+        simpleTree.getProof(0) as `0x${string}`[]
+    );
+    console.log(`   OpenZeppelin verification: ${testVerification}`);
 
-    // Let's manually verify the actual proof that will be used in the transaction
-    console.log(`🔍 DEBUG: Manual verification of actual proof:`);
-    const actualLeaf = secrets[0];
-    const actualProof = proofs[0];
-    console.log(`   Actual leaf: ${toHex(actualLeaf)}`);
-    console.log(`   Actual proof: ${actualProof.map(p => p)}`);
-
-    // Start with the leaf hash (like OpenZeppelin does)
-    let computedHash = hexToBytes(keccak256(actualLeaf));
-    console.log(`   Starting hash: ${toHex(computedHash)}`);
-
-    // Verify step by step
-    for (let i = 0; i < actualProof.length; i++) {
-        const proofElement = hexToBytes(actualProof[i] as `0x${string}`);
-        console.log(`   Step ${i}: current=${toHex(computedHash)}, proof=${toHex(proofElement)}`);
-
-        // Concatenate and hash (like Move contract does)
-        const combined = new Uint8Array([...computedHash, ...proofElement]);
-        computedHash = hexToBytes(keccak256(combined));
-        console.log(`   Step ${i} result: ${toHex(computedHash)}`);
-    }
-
-    console.log(`   Final computed root: ${toHex(computedHash)}`);
+    // Let's verify the actual proof using OpenZeppelin's method
+    console.log(`🔍 DEBUG: Verifying actual proof with OpenZeppelin:`);
+    const actualVerification = SimpleMerkleTree.verify(
+        ozTree.root as `0x${string}`,
+        leafHashes[0] as `0x${string}`,
+        proofs[0] as `0x${string}`[]
+    );
+    console.log(`   Actual proof verification: ${actualVerification}`);
     console.log(`   Expected root: ${ozTree.root}`);
-    console.log(`   Verification result: ${toHex(computedHash) === ozTree.root}`);
 
     return {
         secrets,
-        leafHashes,
+        leafHashes: leafHashes.map(hash => hexToBytes(hash as `0x${string}`)),
         tree: {
             root: toHex(root),
             proofs: proofs
@@ -296,6 +275,11 @@ async function createEscrowWith10Parts(
 
     const finalTxBytes = await sponsoredTx.build({ client });
 
+    // Log final transaction bytes info
+    console.log(`🔍 FINAL TX BYTES:`);
+    console.log(`   Length: ${finalTxBytes.length}`);
+    console.log(`   First 20: [${Array.from(finalTxBytes.slice(0, 20)).join(', ')}]`);
+
     // Both Alice and Bob need to sign
     const aliceSignature = await aliceKeypair.signTransaction(finalTxBytes);
     const bobSignature = await bobKeypair.signTransaction(finalTxBytes);
@@ -329,11 +313,19 @@ async function createEscrowWith10Parts(
         return null;
     }
 
+    // Debug: Log all object changes
+    console.log(`🔍 DEBUG: All object changes:`);
+    result.objectChanges?.forEach((change, index) => {
+        console.log(`   ${index}: ${change.type} - ${change.objectType} - ${change.objectId}`);
+    });
+
     // Extract created escrow object
     const createdObjects = result.objectChanges?.filter(
         change => change.type === 'created' &&
             change.objectType?.includes('::srcescrow::Escrow')
     );
+
+    console.log(`🔍 DEBUG: Found ${createdObjects?.length || 0} created escrow objects`);
 
     if (createdObjects && createdObjects.length > 0 && createdObjects[0].type === 'created') {
         const escrowId = createdObjects[0].objectId;
@@ -431,13 +423,13 @@ async function bobWithdrawsWithRelayerSignature(
     // Test OpenZeppelin's verification for both secrets
     console.log(`   🔍 OpenZeppelin verification test for both secrets:`);
 
-    // Verify start secret (Secret 1)
+    // Verify start secret (Secret 1) - use hashed leaf
     const startProofHexStrings = startProof.map(p => toHex(new Uint8Array(p)));
-    const startLeafHex = toHex(secretData.secrets[0]);
+    const startLeafHash = keccak256(secretData.secrets[0]); // Hash the secret to get leaf
     const rootHex = toHex(secretData.merkleRoot);
 
     try {
-        const startVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, startLeafHex as `0x${string}`, startProofHexStrings as `0x${string}`[]);
+        const startVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, startLeafHash as `0x${string}`, startProofHexStrings as `0x${string}`[]);
         console.log(`   Start secret (Secret 1) verification: ${startVerification}`);
 
         if (!startVerification) {
@@ -449,12 +441,12 @@ async function bobWithdrawsWithRelayerSignature(
         return;
     }
 
-    // Verify end secret (Secret 5)
+    // Verify end secret (Secret 5) - use hashed leaf
     const endProofHexStrings = endProof.map(p => toHex(new Uint8Array(p)));
-    const endLeafHex = toHex(secretData.secrets[4]);
+    const endLeafHash = keccak256(secretData.secrets[4]); // Hash the secret to get leaf
 
     try {
-        const endVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, endLeafHex as `0x${string}`, endProofHexStrings as `0x${string}`[]);
+        const endVerification = SimpleMerkleTree.verify(rootHex as `0x${string}`, endLeafHash as `0x${string}`, endProofHexStrings as `0x${string}`[]);
         console.log(`   End secret (Secret 5) verification: ${endVerification}`);
 
         if (!endVerification) {

@@ -408,10 +408,9 @@ public fun withdraw_partial_single_authorized(
     // Validate secret index
     assert!(secret_index > 0 && secret_index <= escrow.num_parts + 1, EINVALID_SECRET_INDEX);
     
-            // For OpenZeppelin SimpleMerkleTree compatibility:
-        // OpenZeppelin expects raw secrets as leaves and hashes them internally
-        // The Move contract should expect the raw secret as the leaf
-        let leaf_hash = secret;
+            // FIXED: Hash the secret to create the leaf hash
+            // This proves we know the secret and matches the merkle tree construction
+            let leaf_hash = keccak256(&secret);
     
     // Verify Merkle proof
     assert!(verify_merkle_proof(&escrow.merkle_root, &leaf_hash, &merkle_proof, secret_index - 1), EINVALID_MERKLE_PROOF);
@@ -453,21 +452,21 @@ public fun withdraw_partial_single_authorized(
     
     // Transfer funds to the authorized resolver (from signature), not necessarily the caller
     sui::transfer::public_transfer(coin, authorized_resolver);
-    
+        
     // Handle deposit fee reward
-    let deposit_reward = if (balance::value(&escrow.deposit_fee) > 0) {
-        let fee_amount = balance::value(&escrow.deposit_fee);
-        let fee_balance = balance::split(&mut escrow.deposit_fee, fee_amount);
-        let reward_coin = coin::from_balance(fee_balance, ctx);
+        let deposit_reward = if (balance::value(&escrow.deposit_fee) > 0) {
+            let fee_amount = balance::value(&escrow.deposit_fee);
+            let fee_balance = balance::split(&mut escrow.deposit_fee, fee_amount);
+            let reward_coin = coin::from_balance(fee_balance, ctx);
         sui::transfer::public_transfer(reward_coin, authorized_resolver);
-        option::none() // Already transferred
-    } else {
-        option::none()
-    };
-    
-    // Return zero coin since we transferred the real coin
-    let zero_coin = coin::zero<SUI>(ctx);
-    (zero_coin, deposit_reward)
+            option::none() // Already transferred
+        } else {
+            option::none()
+        };
+        
+        // Return zero coin since we transferred the real coin
+        let zero_coin = coin::zero<SUI>(ctx);
+        (zero_coin, deposit_reward)
 }
 
 /// Withdraw partial amount with range of secrets and relayer authorization
@@ -531,10 +530,10 @@ public fun withdraw_partial_range_authorized(
     assert!(start_secret_index > 0 && start_secret_index <= escrow.num_parts + 1, EINVALID_SECRET_INDEX);
     assert!(end_secret_index >= start_secret_index && end_secret_index <= escrow.num_parts + 1, EINVALID_SECRET_INDEX);
     
-            // For OpenZeppelin SimpleMerkleTree, the leaves are the raw secrets
-        // The Move contract should expect the raw secrets as the leaves
-        let start_leaf_hash = start_secret;
-        let end_leaf_hash = end_secret;
+            // FIXED: Hash the secrets to create the leaf hashes
+            // This proves we know the secrets and matches the merkle tree construction
+            let start_leaf_hash = keccak256(&start_secret);
+            let end_leaf_hash = keccak256(&end_secret);
     
     // Verify Merkle proofs for both start and end secrets
     assert!(verify_merkle_proof(&escrow.merkle_root, &start_leaf_hash, &start_merkle_proof, start_secret_index - 1), EINVALID_MERKLE_PROOF);
@@ -656,9 +655,9 @@ public fun withdraw_full_authorized(
         abort EWINDOW_EXPIRED
     };
     
-            // For OpenZeppelin SimpleMerkleTree, the leaf is the raw secret
-        // The Move contract should expect the raw secret as the leaf
-        let leaf_hash = completion_secret;
+            // FIXED: Hash the secret to create the leaf hash
+            // This proves we know the secret and matches the merkle tree construction
+            let leaf_hash = keccak256(&completion_secret);
     
     // Verify Merkle proof
     assert!(verify_merkle_proof(&escrow.merkle_root, &leaf_hash, &completion_merkle_proof, completion_secret_index - 1), EINVALID_MERKLE_PROOF);
@@ -698,20 +697,20 @@ public fun withdraw_full_authorized(
     
     // Transfer funds to the authorized resolver (from signature), not necessarily the caller
     sui::transfer::public_transfer(main_coin, authorized_resolver);
-    
+        
     // Handle deposit fee reward
-    if (balance::value(&deposit_fee) > 0) {
-        let reward_coin = coin::from_balance(deposit_fee, ctx);
+        if (balance::value(&deposit_fee) > 0) {
+            let reward_coin = coin::from_balance(deposit_fee, ctx);
         sui::transfer::public_transfer(reward_coin, authorized_resolver);
-    } else {
-        balance::destroy_zero(deposit_fee);
-    };
-    
-    object::delete(id);
-    
-    // Return zero coins since we transferred the real coins
-    let zero_main = coin::zero<SUI>(ctx);
-    (zero_main, option::none())
+        } else {
+            balance::destroy_zero(deposit_fee);
+        };
+        
+        object::delete(id);
+        
+        // Return zero coins since we transferred the real coins
+        let zero_main = coin::zero<SUI>(ctx);
+        (zero_main, option::none())
 }
 
 /// Anyone can refund to maker in DstCancellation window  

@@ -1,0 +1,52 @@
+{
+    "name": "sui-evm-bridge-integration",
+    "version": "1.0.0",
+    "description": "Sui ↔ EVM Cross-Chain Bridge Integration Demo",
+    "main": "demo-sui-evm-bridge.ts",
+    "scripts": {
+        "demo": "ts-node demo-sui-evm-bridge.ts",
+        "real-world": "ts-node real-world-integration.ts",
+        "relayer": "ts-node relayer/websocket-relayer.ts",
+        "client": "ts-node relayer/websocket-client.ts",
+        "sui-to-evm": "ts-node sui-to-evm.ts",
+        "sui-to-evm-simple": "ts-node sui-to-evm-simple.ts",
+        "evm-to-sui": "ts-node evm-to-sui.ts",
+        "resolver-sui-to-evm": "ts-node resolver-sui-to-evm.ts",
+        "build": "tsc",
+        "test": "jest",
+        "lint": "eslint . --ext .ts",
+        "format": "prettier --write ."
+    },
+    "dependencies": {
+        "@1inch/fusion-sdk": "^1.0.0",
+        "@mysten/sui": "1.36.2",
+        "@openzeppelin/merkle-tree": "^1.0.8",
+        "@types/node": "^24.1.0",
+        "dotenv": "^16.6.1",
+        "viem": "^2.21.44",
+        "ethers": "^6.0.0",
+        "ts-node": "^10.9.0",
+        "typescript": "^5.0.0",
+        "ws": "^8.14.2",
+        "@types/ws": "^8.5.10"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@typescript-eslint/eslint-plugin": "^6.0.0",
+        "@typescript-eslint/parser": "^6.0.0",
+        "eslint": "^8.0.0",
+        "jest": "^29.0.0",
+        "prettier": "^3.0.0"
+    },
+    "keywords": [
+        "sui",
+        "evm",
+        "cross-chain",
+        "bridge",
+        "1inch",
+        "websocket",
+        "relayer"
+    ],
+    "author": "Your Name",
+    "license": "MIT"
+}
