@@ -38,6 +38,7 @@ class SuiToEvmClient extends EventEmitter {
     private secrets: Uint8Array[] = []
     private merkleRoot: Uint8Array | null = null
     private orderId: string | null = null
+    private orders: Map<string, any> = new Map()
     // Removed suiClient - resolver handles all Sui interactions
     private aliceKeypair: Ed25519Keypair
     private signedTransactionBytes: Uint8Array | null = null
@@ -117,6 +118,14 @@ class SuiToEvmClient extends EventEmitter {
         if (response.type === 'ORDER_CREATED') {
             console.log(`   Order ID: ${response.data.orderId}`)
             this.orderId = response.data.orderId
+            // Make sure we store the order data with the orderId
+            if (response.data.orderId && !this.orders.has(response.data.orderId)) {
+                console.log(`   📝 Storing order data with ID: ${response.data.orderId}`);
+                this.orders.set(response.data.orderId, {
+                    ...response.data,
+                    orderId: response.data.orderId
+                });
+            }
         } else if (response.type === 'ORDER_EXECUTED') {
             console.log(`   Order ID: ${response.data.orderId}`)
             console.log(`   Success: ${response.data.success}`)
@@ -150,8 +159,8 @@ class SuiToEvmClient extends EventEmitter {
     /**
      * Generate OpenZeppelin Merkle tree (same as working Sui demo)
      */
-    async generateSecrets(numParts: number): Promise<void> {
-        console.log(`🎲 Generating ${numParts + 1} random secrets...`)
+    async generateSecrets(totalParts: number): Promise<void> {
+        console.log(`🎲 Generating ${totalParts + 1} random secrets for ${totalParts} parts...`)
 
         // Generate N+1 random secrets (32 bytes each)
         this.secrets = []
@@ -160,7 +169,7 @@ class SuiToEvmClient extends EventEmitter {
         const timestamp = Date.now()
         console.log(`   Timestamp for unique secrets: ${timestamp}`)
 
-        for (let i = 0; i < numParts + 1; i++) {
+        for (let i = 0; i < totalParts + 1; i++) {
             // Generate random 32-byte secret using crypto.randomBytes + timestamp for uniqueness
             const randomBytes = crypto.randomBytes(28) // 28 bytes for randomness
             const timestampBytes = new Uint8Array(4)
@@ -176,8 +185,13 @@ class SuiToEvmClient extends EventEmitter {
         }
 
         // FIXED: Hash secrets first to create secure leaves (like the fixed demo)
-        // Convert secrets to hashed leaves for SimpleMerkleTree
-        const leafHashes = this.secrets.map(secret => keccak256(secret))
+        // Convert ONLY the first totalParts secrets to hashed leaves for SimpleMerkleTree
+        // The extra secret (totalParts + 1) is not used in the merkle tree
+        const merkleTreeSecrets = this.secrets.slice(0, totalParts); // Only use first totalParts secrets
+        const leafHashes = merkleTreeSecrets.map(secret => keccak256(secret))
+
+        console.log(`   🌳 Building merkle tree from ${merkleTreeSecrets.length} secrets (0-${totalParts - 1})`);
+        console.log(`   📊 Extra secret at index ${totalParts} not used in merkle tree`);
 
         // Build tree with SimpleMerkleTree - CRITICAL: sortLeaves: false to preserve order
         const ozTree = SimpleMerkleTree.of(leafHashes, { sortLeaves: false })
@@ -231,45 +245,63 @@ class SuiToEvmClient extends EventEmitter {
             console.log(`   Alice EVM Address: ${aliceEvmAddress}`)
         }
 
-        // Calculate leaf hashes from the generated secrets (keccak256 of secrets)
-        const allLeafHashes = this.secrets.map(secret => keccak256(secret))
-        console.log(`   🔐 Generated ${allLeafHashes.length} leaf hashes`)
+        // Calculate leaf hashes from the first totalParts secrets (consistent with merkle tree)
+        const merkleTreeSecrets = this.secrets.slice(0, totalParts);
+        const allLeafHashes = merkleTreeSecrets.map(secret => keccak256(secret))
+        console.log(`   🔐 Generated ${allLeafHashes.length} leaf hashes from first ${totalParts} secrets`)
 
-        // Bob typically fills parts 5-9 (50% of 10 parts), so send leaf hashes for those parts
-        // For now, send all leaf hashes - resolver can pick what he needs
+        // Send all leaf hashes from the merkle tree - resolver can pick what he needs
         const leafHashesForResolver = allLeafHashes
         console.log(`   📋 Sending ${leafHashesForResolver.length} leaf hashes to resolver`)
-        console.log(`   📋 Leaf hash for part 5 (index 4): ${leafHashesForResolver[4]}`)
+        if (leafHashesForResolver.length > 4) {
+            console.log(`   📋 Leaf hash for part 5 (index 4): ${leafHashesForResolver[4]}`)
+        }
+
+        // Create order data
+        const orderData = {
+            sourceChain: 'SUI_TESTNET',
+            destinationChain: 'BASE_SEPOLIA',
+            makerAddress: request.makerAddress,
+            makerEvmAddress: aliceEvmAddress || '0x0000000000000000000000000000000000000001', // Add Alice's EVM address or placeholder
+            makerAsset: request.makerAsset,
+            takerAsset: request.takerAsset,
+            makingAmount: request.makingAmount,
+            takingAmount: request.takingAmount,
+            totalParts,
+            merkleRoot: toHex(this.merkleRoot!),
+            leafHashes: leafHashesForResolver, // Send leaf hashes (safe to share)
+            // NO TRANSACTION BYTES - resolver will create everything
+            timeWindows: request.timeWindows || {
+                srcWithdrawal: Math.floor(Date.now() / 1000) + 3600,
+                srcPublicWithdrawal: Math.floor(Date.now() / 1000) + 7200,
+                srcCancellation: Math.floor(Date.now() / 1000) + 1800,
+                dstWithdrawal: Math.floor(Date.now() / 1000) + 3600,
+                dstPublicWithdrawal: Math.floor(Date.now() / 1000) + 7200,
+                dstCancellation: Math.floor(Date.now() / 1000) + 1800
+            }
+        };
 
         const message: RelayerMessage = {
             type: 'CREATE_ORDER',
             id: this.generateMessageId(),
-            data: {
-                sourceChain: 'SUI_TESTNET',
-                destinationChain: 'BASE_SEPOLIA',
-                makerAddress: request.makerAddress,
-                makerEvmAddress: aliceEvmAddress || '0x0000000000000000000000000000000000000001', // Add Alice's EVM address or placeholder
-                makerAsset: request.makerAsset,
-                takerAsset: request.takerAsset,
-                makingAmount: request.makingAmount,
-                takingAmount: request.takingAmount,
-                totalParts,
-                merkleRoot: toHex(this.merkleRoot!),
-                leafHashes: leafHashesForResolver, // Send leaf hashes (safe to share)
-                // NO TRANSACTION BYTES - resolver will create everything
-                timeWindows: request.timeWindows || {
-                    srcWithdrawal: Math.floor(Date.now() / 1000) + 3600,
-                    srcPublicWithdrawal: Math.floor(Date.now() / 1000) + 7200,
-                    srcCancellation: Math.floor(Date.now() / 1000) + 1800,
-                    dstWithdrawal: Math.floor(Date.now() / 1000) + 3600,
-                    dstPublicWithdrawal: Math.floor(Date.now() / 1000) + 7200,
-                    dstCancellation: Math.floor(Date.now() / 1000) + 1800
-                }
-            },
+            data: orderData,
             clientType: 'MAKER'
         }
 
-        return this.sendMessage(message)
+        // Send message and store order data
+        const response = await this.sendMessage(message);
+
+        // Store order data with orderId from response
+        if (response.orderId) {
+            console.log(`   📝 Storing order data with ID: ${response.orderId}`);
+            this.orderId = response.orderId; // Also update current orderId
+            this.orders.set(response.orderId, {
+                ...orderData,
+                orderId: response.orderId
+            });
+        }
+
+        return response
     }
 
     // createGaslessTransaction method removed - resolver handles all transaction creation
@@ -332,7 +364,7 @@ class SuiToEvmClient extends EventEmitter {
     /**
      * Provide secrets for escrow unlocking
      */
-    async provideSecretsForUnlocking(orderId: string, suiEscrowAddress: string): Promise<void> {
+    async provideSecretsForUnlocking(orderId: string, suiEscrowAddress: string, resolverWantsToFill?: number): Promise<void> {
         console.log(`🔐 Providing secrets for order: ${orderId}`)
         console.log(`   Sui Escrow: ${suiEscrowAddress}`)
 
@@ -340,17 +372,58 @@ class SuiToEvmClient extends EventEmitter {
             throw new Error('No secrets generated yet')
         }
 
-        // SECURE APPROACH: Only reveal needed secrets, share hashed leaves for the rest
-        // For 5/10 parts fill: reveal secrets 0-4, share hashed leaves 5-10
-        const secretsToReveal = this.secrets.slice(0, 5) // Raw secrets 0-4 (needed for withdrawal)
-        const secretsToKeepSecret = this.secrets.slice(5) // Raw secrets 5-10 (keep private)
-        const hashedLeavesForProof = secretsToKeepSecret.map(secret => keccak256(secret)) // Hash secrets 5-10
-        const evmSecret = this.secrets[4] // secret 4 for EVM withdrawal
+        // Get the order to know total parts
+        console.log(`   🔍 Looking for order ${orderId} in ${this.orders.size} stored orders...`);
+        const order = Array.from(this.orders.values()).find(o => o.orderId === orderId);
+        if (!order) {
+            console.log(`   ❌ Available order IDs: ${Array.from(this.orders.keys()).join(', ')}`);
+            throw new Error(`Order ${orderId} not found`);
+        }
+        console.log(`   ✅ Found order with ${order.totalParts} total parts`);
 
-        console.log(`   🔓 Revealing secrets 0-4: ${secretsToReveal.length} raw secrets`)
-        console.log(`   🔐 Keeping secrets 5-10 private: ${secretsToKeepSecret.length} secrets`)
-        console.log(`   🌳 Sharing hashed leaves 5-10: ${hashedLeavesForProof.length} hashes`)
-        console.log(`   🔓 Secret for EVM withdrawal (4): ${toHex(evmSecret)}`)
+        // SECURE APPROACH: Reveal secrets based on how many parts the resolver wants to fill
+        // Use provided value or default to half of total parts
+        const partsToFill = resolverWantsToFill || Math.floor(order.totalParts / 2);
+        console.log(`   📊 Resolver wants to fill ${partsToFill} parts`);
+
+        const secretsToReveal = this.secrets.slice(0, partsToFill) // Secrets 0 to partsToFill-1
+        const secretsToKeepSecret = this.secrets.slice(partsToFill, order.totalParts) // Secrets partsToFill to totalParts-1
+        console.log(`   📊 Using ${order.totalParts} out of ${this.secrets.length} generated secrets for merkle tree`);
+        const hashedLeavesForProof = secretsToKeepSecret.map(secret => keccak256(secret)) // Hash remaining secrets
+        const evmSecret = this.secrets[partsToFill - 1] // Last secret that resolver will use for EVM withdrawal
+
+        console.log(`   🔓 Revealing secrets 0-${partsToFill - 1}: ${secretsToReveal.length} raw secrets`)
+        console.log(`   🔐 Keeping secrets ${partsToFill}-${order.totalParts - 1} private: ${secretsToKeepSecret.length} secrets`)
+        console.log(`   🌳 Sharing hashed leaves ${partsToFill}-${order.totalParts - 1}: ${hashedLeavesForProof.length} hashes`)
+        console.log(`   🔓 Secret for EVM withdrawal (${partsToFill - 1}): ${toHex(evmSecret)}`)
+
+        // Verify that our partial data can reconstruct the original merkle root
+        const reconstructedLeafHashes = [
+            ...secretsToReveal.map(secret => keccak256(secret)), // Hash revealed secrets
+            ...hashedLeavesForProof // Already hashed leaves
+        ];
+        const reconstructedTree = SimpleMerkleTree.of(reconstructedLeafHashes, { sortLeaves: false });
+        const reconstructedRoot = reconstructedTree.root as `0x${string}`;
+        const storedRoot = toHex(this.merkleRoot!);
+        console.log(`   🔍 Verifying partial reconstruction:`);
+        console.log(`      Stored root: ${storedRoot}`);
+        console.log(`      Reconstructed root: ${reconstructedRoot}`);
+        console.log(`      Match: ${storedRoot === reconstructedRoot ? '✅' : '❌'}`);
+        if (storedRoot !== reconstructedRoot) {
+            console.log(`   ❌ WARNING: Partial data cannot reconstruct original merkle root!`);
+            console.log(`   ❌ This will cause the relayer to reject the secrets.`);
+        }
+
+        // Verify merkle root consistency (full reconstruction using only totalParts secrets)
+        const merkleTreeSecrets = this.secrets.slice(0, order.totalParts); // Only use first totalParts secrets
+        const allLeafHashes = merkleTreeSecrets.map(secret => keccak256(secret));
+        const ozTree = SimpleMerkleTree.of(allLeafHashes, { sortLeaves: false });
+        const recalculatedRoot = ozTree.root as `0x${string}`;
+        console.log(`   🔍 Verifying full merkle root consistency:`);
+        console.log(`      Using secrets 0-${order.totalParts - 1} (${merkleTreeSecrets.length} secrets)`);
+        console.log(`      Stored: ${storedRoot}`);
+        console.log(`      Recalculated: ${recalculatedRoot}`);
+        console.log(`      Match: ${storedRoot === recalculatedRoot ? '✅' : '❌'}`);
 
         const message: RelayerMessage = {
             type: 'PROVIDE_SECRETS',
@@ -358,9 +431,10 @@ class SuiToEvmClient extends EventEmitter {
             data: {
                 orderId: orderId,
                 suiEscrowAddress: suiEscrowAddress,
-                revealedSecrets: secretsToReveal.map(secret => Array.from(secret)), // Only secrets 0-4
-                hashedLeaves: hashedLeavesForProof, // Hashed leaves 5-10 for merkle proof
-                evmSecret: Array.from(evmSecret) // Secret 4 for EVM withdrawal
+                merkleRoot: toHex(this.merkleRoot!), // Include merkle root for validation
+                revealedSecrets: secretsToReveal.map(secret => Array.from(secret)), // First half of secrets
+                hashedLeaves: hashedLeavesForProof, // Hashed leaves for second half
+                evmSecret: Array.from(evmSecret) // Last secret of first half for EVM withdrawal
             },
             clientType: 'MAKER'
         }
@@ -433,14 +507,13 @@ async function demonstrateSuiToEvm() {
 
     // Subscribe to events
     client.on('event', (data) => {
-        console.log('📡 Received event:', data)
+        console.log('📡 Received event type:', data.type)
     })
 
     // Note: Removed old order_executed handler - now using DEPLOYMENT_VALIDATED event instead
 
     // Listen for sponsored transaction signing request from resolver
     client.on('event', async (data) => {
-        console.log('\n🔍 MAKER: Received EVENT:', JSON.stringify(data, null, 2))
         console.log(`🔍 MAKER: Event type detected: ${data.type}`)
 
         if (data.type === 'SPONSORED_TRANSACTION_READY' && data.finalTransactionBytes) {
@@ -476,7 +549,10 @@ async function demonstrateSuiToEvm() {
 
             // Now provide secrets for unlocking
             console.log('\n🔐 Providing secrets for escrow unlocking...')
-            await client.provideSecretsForUnlocking(data.orderId, data.deploymentData.suiEscrowAddress)
+            // Get the actual number of parts the resolver wants to fill from the event data
+            const resolverPartsToFill = data.deploymentData.partsToFill || 5; // Get from deployment data
+            console.log(`   📊 Resolver wants to fill ${resolverPartsToFill} parts`);
+            await client.provideSecretsForUnlocking(data.orderId, data.deploymentData.suiEscrowAddress, resolverPartsToFill)
         } else if (data.type === 'SECRETS_AUTHORIZED') {
             console.log('\n🔐 SECRETS AUTHORIZED BY RELAYER!')
             console.log('='.repeat(50))
@@ -492,9 +568,33 @@ async function demonstrateSuiToEvm() {
     })
 
     try {
-        // Create a SUI → USDC order (EXACTLY like working example)
+        // Wait for WebSocket connection before asking for input
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Ask for number of parts first, before any other output
+        const readline = require('readline').createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        console.log('\n📋 Order Configuration');
+        const totalParts = await new Promise<number>((resolve) => {
+            readline.question('How many parts would you like to create? (default: 10): ', (answer: string) => {
+                readline.close();
+                const num = parseInt(answer);
+                if (isNaN(num) || num < 1) {
+                    console.log('⚠️  Invalid input, using default: 10 parts');
+                    resolve(10);
+                } else {
+                    resolve(num);
+                }
+            });
+        });
+
+        // Now show order details
         console.log('\n📝 Creating SUI → USDC order...')
-        console.log('   Trading: 0.001 SUI → 0.10 USDC (EXACTLY like working example)')
+        console.log(`   Parts: ${totalParts}`)
+        console.log('   Trading: 0.001 SUI → 0.10 USDC')
         console.log('   Rate: ~$3.70 SUI = $0.10 USDC')
 
         // Get Alice's address from her keypair
@@ -505,7 +605,7 @@ async function demonstrateSuiToEvm() {
         const aliceKeypair = Ed25519Keypair.fromSecretKey(alicePrivateKey)
         const aliceAddress = aliceKeypair.toSuiAddress()
 
-        console.log(`   Maker Address: ${aliceAddress}`)
+        console.log(`   Maker Address: ${aliceAddress}`);
 
         const order = await client.createSuiToEvmOrder({
             makerAddress: aliceAddress,
@@ -513,7 +613,7 @@ async function demonstrateSuiToEvm() {
             takerAsset: '0x036CbD53842c5426634e7929541eC2318f3dCF7c',
             makingAmount: '1000000', // 0.001 SUI (1M MIST) - EXACTLY like working example
             takingAmount: '100000', // 0.10 USDC (100,000 wei with 6 decimals)
-            totalParts: 10
+            totalParts: totalParts
         })
 
         console.log('✅ Order created:', order.orderId)
@@ -529,7 +629,7 @@ async function demonstrateSuiToEvm() {
         // Show secrets info (but don't reveal them yet)
         console.log('\n🔐 Secrets Information:')
         console.log(`   Merkle Root: ${client.getMerkleRoot()}`)
-        console.log(`   Total Secrets: ${client.getSecretsForRange(0, 9).length}`)
+        console.log(`   Total Secrets: ${client.getSecretsForRange(0, totalParts).length}`)
         console.log(`   Order ID: ${client.getOrderId()}`)
 
         console.log('\n⏳ Waiting for resolver to deploy atomic escrows...')

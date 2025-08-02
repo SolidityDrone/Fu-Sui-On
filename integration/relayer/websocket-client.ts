@@ -89,7 +89,7 @@ export class WebSocketClient extends EventEmitter {
             console.log(`   Order ID: ${response.data.orderId}`)
             console.log(`   Success: ${response.data.success}`)
         } else if (response.type === 'EVENT') {
-            console.log(`   Event: ${JSON.stringify(response.data, null, 2)}`)
+            console.log(`   Event type: ${response.data?.type || 'unknown'}`)
         }
     }
 
@@ -234,7 +234,7 @@ async function demonstrateClient() {
 
     // Subscribe to events
     client.on('event', (data) => {
-        console.log('📡 Received event:', data)
+        console.log('📡 Received event type:', data.type)
     })
 
     try {
@@ -320,4 +320,3 @@ if (require.main === module) {
     demonstrateClient().catch(console.error)
 }
 
- 

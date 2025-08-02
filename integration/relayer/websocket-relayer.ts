@@ -749,8 +749,10 @@ export class WebSocketRelayer extends EventEmitter {
             console.log(`🔍 DEBUG: Retrieved order data for validation:`)
             console.log(`   Merkle Root: ${orderData.merkleRoot || 'MISSING'}`)
             console.log(`   Leaf Hashes: ${orderData.leafHashes?.length || 0} available`)
-            if (orderData.leafHashes && orderData.leafHashes.length > 4) {
-                console.log(`   Expected hashlock (leaf 5): ${orderData.leafHashes[4]}`)
+            console.log(`   Parts to Fill: ${request.partsToFill || 'Not specified'}`)
+            if (orderData.leafHashes && orderData.leafHashes.length > 0) {
+                const expectedHashlockIndex = (request.partsToFill || 5) - 1;
+                console.log(`   Expected hashlock (leaf ${request.partsToFill || 5}): ${orderData.leafHashes[expectedHashlockIndex]}`)
             }
 
             // Validate deployment data against stored order
@@ -765,6 +767,7 @@ export class WebSocketRelayer extends EventEmitter {
                     order.status = 'DEPLOYED'
                     order.suiEscrowAddress = request.srcEscrowSuiAddress
                     order.evmEscrowAddress = request.dstEvmEscrowAddress
+                    order.partsToFill = request.partsToFill // Store partsToFill for secret verification
                     this.orders.set(request.orderId, order)
                 }
 
@@ -818,14 +821,18 @@ export class WebSocketRelayer extends EventEmitter {
             return { isValid: false, reason: 'Order missing merkle root' }
         }
 
-        if (!orderData.leafHashes || orderData.leafHashes.length < 5) {
-            return { isValid: false, reason: `Order missing sufficient leaf hashes (need 5+, got ${orderData.leafHashes?.length || 0})` }
+        // Get partsToFill from deployment data, default to 5 if not specified
+        const partsToFill = deploymentData.partsToFill || 5;
+        const expectedHashlockIndex = partsToFill - 1;
+
+        if (!orderData.leafHashes || orderData.leafHashes.length < partsToFill) {
+            return { isValid: false, reason: `Order missing sufficient leaf hashes (need ${partsToFill}+, got ${orderData.leafHashes?.length || 0})` }
         }
 
-        // Validate that the reported hashlock matches the expected leaf hash (5th one for 5/10 parts)
-        const expectedHashlock = orderData.leafHashes[4] // 5th leaf hash (0-indexed)
+        // Validate that the reported hashlock matches the expected leaf hash (dynamic based on partsToFill)
+        const expectedHashlock = orderData.leafHashes[expectedHashlockIndex] // Dynamic leaf hash (0-indexed)
         console.log(`   🔍 Hashlock validation:`)
-        console.log(`     Expected (leaf hash 5): ${expectedHashlock}`)
+        console.log(`     Expected (leaf hash ${partsToFill}): ${expectedHashlock}`)
         console.log(`     Reported by resolver: ${deploymentData.hashlock}`)
 
         if (deploymentData.hashlock !== expectedHashlock) {
@@ -895,7 +902,8 @@ export class WebSocketRelayer extends EventEmitter {
                         suiEscrowAddress: deploymentData.srcEscrowSuiAddress,
                         evmEscrowAddress: deploymentData.dstEvmEscrowAddress,
                         chainId: deploymentData.chainId,
-                        hashlock: deploymentData.hashlock
+                        hashlock: deploymentData.hashlock,
+                        partsToFill: deploymentData.partsToFill // Include partsToFill for maker
                     },
                     timestamp: Date.now()
                 }
@@ -916,7 +924,12 @@ export class WebSocketRelayer extends EventEmitter {
         console.log(`\n🔐 ${clientType} providing secrets for order: ${request.orderId}`)
         console.log(`   🔓 Revealed secrets: ${request.revealedSecrets?.length || 0} provided`)
         console.log(`   🌳 Hashed leaves: ${request.hashedLeaves?.length || 0} provided`)
-        console.log(`   🔓 EVM secret (4): ${request.evmSecret ? 'Provided' : 'Missing'}`)
+
+        // Get partsToFill from stored order data
+        const order = this.orders.get(request.orderId)
+        const partsToFill = order?.partsToFill || 5;
+        console.log(`   📊 Parts to fill: ${partsToFill}`)
+        console.log(`   🔓 EVM secret (${partsToFill - 1}): ${request.evmSecret ? 'Provided' : 'Missing'}`)
 
         try {
             // Get the stored order data
@@ -943,8 +956,8 @@ export class WebSocketRelayer extends EventEmitter {
 
                 console.log(`   Expected root: ${orderData.merkleRoot}`)
                 console.log(`   Computed root: ${ozTree.root}`)
-                console.log(`   Revealed secrets (0-4): ${hashedRevealedSecrets.length}`)
-                console.log(`   Hashed leaves (5-10): ${request.hashedLeaves.length}`)
+                console.log(`   Revealed secrets (0-${partsToFill - 1}): ${hashedRevealedSecrets.length}`)
+                console.log(`   Hashed leaves (${partsToFill}-${orderData.totalParts - 1}): ${request.hashedLeaves.length}`)
 
                 if (ozTree.root !== orderData.merkleRoot) {
                     throw new Error(`Merkle root mismatch! Partial secrets don't match the original order.`)
